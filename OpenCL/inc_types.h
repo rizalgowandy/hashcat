@@ -11,29 +11,35 @@
 #define BITMAP_SHIFT1       kernel_param->bitmap_shift1
 #define BITMAP_SHIFT2       kernel_param->bitmap_shift2
 #define SALT_POS_HOST       (kernel_param->pws_pos + gid)
+#define SALT_POS_HOST_BID   (kernel_param->pws_pos + bid)
 #define LOOP_POS            kernel_param->loop_pos
 #define LOOP_CNT            kernel_param->loop_cnt
 #define IL_CNT              kernel_param->il_cnt
 #define DIGESTS_CNT         1
-#define DIGESTS_OFFSET_HOST (kernel_param->pws_pos + gid)
+#define DIGESTS_OFFSET_HOST     (kernel_param->pws_pos + gid)
+#define DIGESTS_OFFSET_HOST_BID (kernel_param->pws_pos + bid)
 #define COMBS_MODE          kernel_param->combs_mode
 #define SALT_REPEAT         kernel_param->salt_repeat
 #define PWS_POS             kernel_param->pws_pos
 #define GID_CNT             kernel_param->gid_max
+#define PCFG_LANE_STRIDE    kernel_param->pcfg_lane_stride
 #else
 #define BITMAP_MASK         kernel_param->bitmap_mask
 #define BITMAP_SHIFT1       kernel_param->bitmap_shift1
 #define BITMAP_SHIFT2       kernel_param->bitmap_shift2
 #define SALT_POS_HOST       kernel_param->salt_pos_host
+#define SALT_POS_HOST_BID   SALT_POS_HOST
 #define LOOP_POS            kernel_param->loop_pos
 #define LOOP_CNT            kernel_param->loop_cnt
 #define IL_CNT              kernel_param->il_cnt
 #define DIGESTS_CNT         kernel_param->digests_cnt
 #define DIGESTS_OFFSET_HOST kernel_param->digests_offset_host
+#define DIGESTS_OFFSET_HOST_BID DIGESTS_OFFSET_HOST
 #define COMBS_MODE          kernel_param->combs_mode
 #define SALT_REPEAT         kernel_param->salt_repeat
 #define PWS_POS             kernel_param->pws_pos
 #define GID_CNT             kernel_param->gid_max
+#define PCFG_LANE_STRIDE    kernel_param->pcfg_lane_stride
 #endif
 
 #ifdef IS_CUDA
@@ -1565,6 +1571,202 @@ typedef enum ripemd160_constants
 
 } ripemd160_constants_t;
 
+typedef enum ripemd320_constants
+{
+  RIPEMD320M_A=0x67452301U,
+  RIPEMD320M_B=0xefcdab89U,
+  RIPEMD320M_C=0x98badcfeU,
+  RIPEMD320M_D=0x10325476U,
+  RIPEMD320M_E=0xc3d2e1f0U,
+  RIPEMD320M_F=0x76543210U,
+  RIPEMD320M_G=0xfedcba98U,
+  RIPEMD320M_H=0x89abcdefU,
+  RIPEMD320M_I=0x01234567U,
+  RIPEMD320M_L=0x3c2d1e0fU,
+
+  RIPEMD320C00=0x00000000U,
+  RIPEMD320C10=0x5a827999U,
+  RIPEMD320C20=0x6ed9eba1U,
+  RIPEMD320C30=0x8f1bbcdcU,
+  RIPEMD320C40=0xa953fd4eU,
+  RIPEMD320C50=0x50a28be6U,
+  RIPEMD320C60=0x5c4dd124U,
+  RIPEMD320C70=0x6d703ef3U,
+  RIPEMD320C80=0x7a6d76e9U,
+  RIPEMD320C90=0x00000000U,
+
+  RIPEMD320S00=11,
+  RIPEMD320S01=14,
+  RIPEMD320S02=15,
+  RIPEMD320S03=12,
+  RIPEMD320S04=5,
+  RIPEMD320S05=8,
+  RIPEMD320S06=7,
+  RIPEMD320S07=9,
+  RIPEMD320S08=11,
+  RIPEMD320S09=13,
+  RIPEMD320S0A=14,
+  RIPEMD320S0B=15,
+  RIPEMD320S0C=6,
+  RIPEMD320S0D=7,
+  RIPEMD320S0E=9,
+  RIPEMD320S0F=8,
+
+  RIPEMD320S10=7,
+  RIPEMD320S11=6,
+  RIPEMD320S12=8,
+  RIPEMD320S13=13,
+  RIPEMD320S14=11,
+  RIPEMD320S15=9,
+  RIPEMD320S16=7,
+  RIPEMD320S17=15,
+  RIPEMD320S18=7,
+  RIPEMD320S19=12,
+  RIPEMD320S1A=15,
+  RIPEMD320S1B=9,
+  RIPEMD320S1C=11,
+  RIPEMD320S1D=7,
+  RIPEMD320S1E=13,
+  RIPEMD320S1F=12,
+
+  RIPEMD320S20=11,
+  RIPEMD320S21=13,
+  RIPEMD320S22=6,
+  RIPEMD320S23=7,
+  RIPEMD320S24=14,
+  RIPEMD320S25=9,
+  RIPEMD320S26=13,
+  RIPEMD320S27=15,
+  RIPEMD320S28=14,
+  RIPEMD320S29=8,
+  RIPEMD320S2A=13,
+  RIPEMD320S2B=6,
+  RIPEMD320S2C=5,
+  RIPEMD320S2D=12,
+  RIPEMD320S2E=7,
+  RIPEMD320S2F=5,
+
+  RIPEMD320S30=11,
+  RIPEMD320S31=12,
+  RIPEMD320S32=14,
+  RIPEMD320S33=15,
+  RIPEMD320S34=14,
+  RIPEMD320S35=15,
+  RIPEMD320S36=9,
+  RIPEMD320S37=8,
+  RIPEMD320S38=9,
+  RIPEMD320S39=14,
+  RIPEMD320S3A=5,
+  RIPEMD320S3B=6,
+  RIPEMD320S3C=8,
+  RIPEMD320S3D=6,
+  RIPEMD320S3E=5,
+  RIPEMD320S3F=12,
+
+  RIPEMD320S40=9,
+  RIPEMD320S41=15,
+  RIPEMD320S42=5,
+  RIPEMD320S43=11,
+  RIPEMD320S44=6,
+  RIPEMD320S45=8,
+  RIPEMD320S46=13,
+  RIPEMD320S47=12,
+  RIPEMD320S48=5,
+  RIPEMD320S49=12,
+  RIPEMD320S4A=13,
+  RIPEMD320S4B=14,
+  RIPEMD320S4C=11,
+  RIPEMD320S4D=8,
+  RIPEMD320S4E=5,
+  RIPEMD320S4F=6,
+
+  RIPEMD320S50=8,
+  RIPEMD320S51=9,
+  RIPEMD320S52=9,
+  RIPEMD320S53=11,
+  RIPEMD320S54=13,
+  RIPEMD320S55=15,
+  RIPEMD320S56=15,
+  RIPEMD320S57=5,
+  RIPEMD320S58=7,
+  RIPEMD320S59=7,
+  RIPEMD320S5A=8,
+  RIPEMD320S5B=11,
+  RIPEMD320S5C=14,
+  RIPEMD320S5D=14,
+  RIPEMD320S5E=12,
+  RIPEMD320S5F=6,
+
+  RIPEMD320S60=9,
+  RIPEMD320S61=13,
+  RIPEMD320S62=15,
+  RIPEMD320S63=7,
+  RIPEMD320S64=12,
+  RIPEMD320S65=8,
+  RIPEMD320S66=9,
+  RIPEMD320S67=11,
+  RIPEMD320S68=7,
+  RIPEMD320S69=7,
+  RIPEMD320S6A=12,
+  RIPEMD320S6B=7,
+  RIPEMD320S6C=6,
+  RIPEMD320S6D=15,
+  RIPEMD320S6E=13,
+  RIPEMD320S6F=11,
+
+  RIPEMD320S70=9,
+  RIPEMD320S71=7,
+  RIPEMD320S72=15,
+  RIPEMD320S73=11,
+  RIPEMD320S74=8,
+  RIPEMD320S75=6,
+  RIPEMD320S76=6,
+  RIPEMD320S77=14,
+  RIPEMD320S78=12,
+  RIPEMD320S79=13,
+  RIPEMD320S7A=5,
+  RIPEMD320S7B=14,
+  RIPEMD320S7C=13,
+  RIPEMD320S7D=13,
+  RIPEMD320S7E=7,
+  RIPEMD320S7F=5,
+
+  RIPEMD320S80=15,
+  RIPEMD320S81=5,
+  RIPEMD320S82=8,
+  RIPEMD320S83=11,
+  RIPEMD320S84=14,
+  RIPEMD320S85=14,
+  RIPEMD320S86=6,
+  RIPEMD320S87=14,
+  RIPEMD320S88=6,
+  RIPEMD320S89=9,
+  RIPEMD320S8A=12,
+  RIPEMD320S8B=9,
+  RIPEMD320S8C=12,
+  RIPEMD320S8D=5,
+  RIPEMD320S8E=15,
+  RIPEMD320S8F=8,
+
+  RIPEMD320S90=8,
+  RIPEMD320S91=5,
+  RIPEMD320S92=12,
+  RIPEMD320S93=9,
+  RIPEMD320S94=12,
+  RIPEMD320S95=5,
+  RIPEMD320S96=14,
+  RIPEMD320S97=6,
+  RIPEMD320S98=8,
+  RIPEMD320S99=13,
+  RIPEMD320S9A=6,
+  RIPEMD320S9B=5,
+  RIPEMD320S9C=15,
+  RIPEMD320S9D=13,
+  RIPEMD320S9E=11,
+  RIPEMD320S9F=11
+
+} ripemd320_constants_t;
+
 typedef enum keccak_constants
 {
   KECCAK_RNDC_00=0x0000000000000001UL,
@@ -1770,10 +1972,82 @@ typedef enum sm3_constants
 
 typedef enum combinator_mode
 {
-  COMBINATOR_MODE_BASE_LEFT  = 10001,
-  COMBINATOR_MODE_BASE_RIGHT = 10002
+  COMBINATOR_MODE_BASE_LEFT   = 10001,
+  COMBINATOR_MODE_BASE_RIGHT  = 10002,
+
+  // The base word sits between two amplifier pieces rather than beside one. combs_buf holds them as a
+  // pair, the piece in front of the word at index 0 and the piece behind it at index 1, and either is
+  // allowed to be empty. This is what -a 12 uses, and with an empty first piece it produces exactly
+  // what BASE_LEFT produces.
+
+  COMBINATOR_MODE_BASE_MIDDLE = 10003
 
 } combinator_mode_t;
+
+// How many pieces one amplifier item is cut into. Every attack mode but -a 12 uses one, the single
+// buffer that is appended to the base word. -a 12 uses four, and they arrive interleaved, so item
+// il_pos holds them at combs_buf[il_pos * COMBS_PIECE_CNT + 0 .. 3] in this fixed order.
+
+#define COMBS_PIECE_CNT 4
+
+#define COMBS_PIECE_PRE  0
+#define COMBS_PIECE_MID  1
+#define COMBS_PIECE_WORD 2
+#define COMBS_PIECE_POST 3
+
+// The four pieces of amplifier item il_pos. A kernel names them through these rather than indexing
+// combs_buf itself, so the layout is decided in one place instead of in every per mode kernel.
+
+#define COMBS_PIECE(il_pos, n) combs_buf[((il_pos) * COMBS_PIECE_CNT) + (n)]
+
+#define COMBS_PRE(il_pos)  COMBS_PIECE (il_pos, COMBS_PIECE_PRE)
+#define COMBS_MID(il_pos)  COMBS_PIECE (il_pos, COMBS_PIECE_MID)
+#define COMBS_WORD(il_pos) COMBS_PIECE (il_pos, COMBS_PIECE_WORD)
+
+// The same three lengths as numbers. A pure kernel reads them off the buffers because it walks the
+// pieces one at a time anyway, and an optimized kernel shifts by them, which wants a scalar.
+
+#define COMBS_PRE_LEN  kernel_param->pre_len
+#define COMBS_MID_LEN  kernel_param->mid_len
+#define COMBS_POST_LEN kernel_param->post_len
+#define COMBS_HAS_Q    kernel_param->has_q
+
+// How many bytes of assembled candidate a kernel that holds it as bytes has room for. It is the size
+// of one pw_t buffer, which is what those kernels declare.
+
+#define COMBS_BYTES_MAX 256
+
+// Is this launch the one that cuts an amplifier item into pieces? Only a mask with the base word
+// somewhere inside it does, and a run that holds no such mask has to pay nothing for an assembly it
+// never reaches, so the question is answered at compile time first and the whole block folds away.
+//
+// COMBS_MIDDLE is what the host says about the masks this run actually holds, not about the attack
+// mode. -a 1, -a 6 and -a 7 are rewritten into -a 12 masks whose word is at one end, so they build
+// the kernel they always built. Only a mask with something on both sides of the word, or a ?q behind
+// it, turns the block on.
+//
+// It is still a run time test inside such a build, and it has to be. The self test hands the kernel
+// one buffer at index zero the way -a 1 does, and combs_mode is what says so.
+//
+// backend.c puts this into the kernel cache key for that reason. Without it two runs would build
+// different source out of one file and then share the cached result.
+
+#if defined (COMBS_MIDDLE) && (COMBS_MIDDLE == 1)
+#define COMBS_IS_MIDDLE (COMBS_MODE == COMBINATOR_MODE_BASE_MIDDLE)
+#else
+#define COMBS_IS_MIDDLE 0
+#endif
+
+// The piece that follows the last word, which is the one buffer every layout but the five piece one
+// puts in combs_buf, and the amplifier length an optimized kernel adds to the base word length.
+
+#if defined (COMBS_MIDDLE) && (COMBS_MIDDLE == 1)
+#define COMBS_POST(il_pos)     combs_buf[COMBS_IS_MIDDLE ? (((il_pos) * COMBS_PIECE_CNT) + COMBS_PIECE_POST) : (il_pos)]
+#define COMBS_PW_R_LEN(il_pos) (COMBS_IS_MIDDLE ? pwlenx_create_combsum (combs_buf, il_pos) : pwlenx_create_combt (combs_buf, il_pos))
+#else
+#define COMBS_POST(il_pos)     combs_buf[il_pos]
+#define COMBS_PW_R_LEN(il_pos) pwlenx_create_combt (combs_buf, il_pos)
+#endif
 
 #ifdef KERNEL_STATIC
 typedef struct digest
@@ -1791,15 +2065,36 @@ typedef struct kernel_param
   u32 bitmap_shift1;        // 25
   u32 bitmap_shift2;        // 26
   u32 salt_pos_host;        // 27
-  u32 loop_pos;             // 28
-  u32 loop_cnt;             // 29
-  u32 il_cnt;               // 30
+  u64 loop_pos;             // 28
+  u64 loop_cnt;             // 29
+  u64 il_cnt;               // 30
   u32 digests_cnt;          // 31
   u32 digests_offset_host;  // 32
   u32 combs_mode;           // 33
   u32 salt_repeat;          // 34
   u64 pws_pos;              // 35
   u64 gid_max;              // 36
+
+  // Bytes of mask that sit in front of the base word, so the position of ?w inside the mask. Zero
+  // puts the word first, which is what every attack mode other than -a 12 does. It replaces
+  // combs_mode for -a 12: zero is the -a 6 layout and a value equal to the mask length is -a 7.
+
+  u32 pre_len;              // 37
+
+  // The other two mask piece lengths and whether the mask has a ?q. All three are properties of the
+  // mask and do not change from one amplifier item to the next, which is what lets an optimized
+  // kernel shift by a scalar instead of by a per item length.
+
+  u32 mid_len;              // 38
+  u32 post_len;             // 39
+  u32 has_q;                // 40
+
+  // How many work items every cell gets, when the host has not laid the launch out. Zero means it has,
+  // and then the wave map says which cell a wave belongs to. It is not zero for the self-test, which
+  // runs the kernel before a cell exists at all, and the value is what the device engine gave every cell
+  // before there was a layout to carry.
+
+  u64 pcfg_lane_stride;     // 41
 
 } kernel_param_t;
 
@@ -1812,6 +2107,7 @@ typedef struct salt
   u32 salt_len_pc;
   u32 salt_iter;
   u32 salt_iter2;
+  u32 salt_dimy;
   u32 salt_sign[2];
   u32 salt_repeats;
 
@@ -1864,6 +2160,240 @@ typedef struct pw_idx
 
 } pw_idx_t;
 
+// One slot of a PCFG cell, and the cell itself. See inc_pcfg.h for what a cell is and why its
+// rectangle is what the device engine's inner loop walks. They live here because the kernel parameter
+// list names the cell type and is assembled before inc_pcfg.h is reached.
+
+#define PCFG_DEV_MAXSLOT 8
+
+// How long a candidate the device engine handles, in words and in bytes. The kernel holds the candidate in
+// an array of this many words, and the array is addressed at a runtime byte offset, so it is scratch
+// rather than registers and every thread in flight carries one.
+//
+// That makes its size the largest single thing in the launch's memory traffic. The rules kernel's
+// pw_t, which this was inherited from, is two hundred and sixty bytes a thread and had the profiler
+// reporting ninety one per cent of L2 with a sixty per cent L1 hit rate, for a candidate ten bytes
+// long.
+//
+// **This has to be a whole number of hash blocks, and one is the right number.** The crypto library
+// reads its input one whole block at a time, the last one included: the tail read is sixteen words
+// wide however few of them the length makes meaningful, and nothing masks the rest off.
+// md5_update_64 () copies all sixteen words into the context and md5_final () writes only the 0x80
+// over the first byte behind the candidate, so the words behind it have to be zero and they have to be
+// there to be read. Twenty four words, which is what this was, is neither: a ninety five byte
+// candidate had words sixteen to thirty one read out of it, which compute-sanitizer reports as an
+// invalid __local__ read and which fails the launch on an RTX 4090 outright.
+//
+// One block is also the fastest, because every extra word is in every frame. What it costs is that a
+// grammar whose candidates run long gets fewer of them amplified.
+//
+// A structure whose candidates could reach past this is not amplified at all; see choose_cut (). Its
+// base word still arrives at the kernel at whatever length the grammar makes it, which is not bounded
+// by anything here, so the kernel hashes that case straight out of the pw_t rather than copying it in.
+
+// The value is a build option, because the right one is a property of the grammar and not of the
+// code. The host settles it in global_dev_init (), which runs ahead of the backend compiling
+// anything, and hands it to the kernel as -D PCFG_DEV_MAXWORD. This default is what a kernel built
+// without one gets, which is the self-test and nothing else.
+//
+// Whatever chooses it must also reach the kernel cache key. A cached kernel is named from a checksum
+// that covers build_options_module_buf and extra_value but not the general build options, so a value
+// that only appears in the latter would let two grammars share one compiled kernel. backend.c folds
+// it into extra_value for that reason.
+
+#ifndef PCFG_DEV_MAXWORD
+#define PCFG_DEV_MAXWORD 16
+#endif
+
+#define PCFG_DEV_MAXBYTE ((PCFG_DEV_MAXWORD * 4) - 1)
+
+// The two the host picks between, in whole hash blocks. One block is the smallest frame and the
+// fastest on a grammar that fits it; two runs on the device more of a grammar whose candidates run long.
+
+#define PCFG_DEV_MAXWORD_LO 16
+#define PCFG_DEV_MAXWORD_HI 32
+
+// The array is a whole number of blocks, and the rule above is what says it has to be. Kept as its own
+// name so that changing PCFG_DEV_MAXWORD to something that is not cannot go unnoticed.
+
+#define PCFG_DEV_WORDS   (((PCFG_DEV_MAXWORD + 15) / 16) * 16)
+
+// How many candidates one work item walks.
+//
+// A cell gets as many work items as its rectangle needs at this many candidates each, so no work item
+// runs longer than this. A rectangle spans six orders of magnitude, so a fixed number of work items
+// per cell instead would make the widest cell in a launch set the length of the whole launch.
+//
+// It is a curve with a maximum. A shorter run is a shorter tail; a longer one gives a work item more
+// candidates to spread its setup over, and the seed and the first write happen before any hashing
+// does. PCFG_BLOCK overrides it.
+
+#define PCFG_DEV_BLOCK 64
+
+// The work item budget a launch may spend, per base word. A batch of unusually wide cells raises the
+// block size until it fits rather than growing the launch past anything sized for it.
+
+#define PCFG_DEV_LANES 512
+
+// How many waves of wave map are held for every base word a batch can hold. A cell wide enough to want
+// more than the batch has left runs longer per work item instead. The map is a word a wave.
+
+#define PCFG_DEV_WMAP 24
+
+// The fewest waves a cell is given, whatever its rectangle.
+//
+// A cell that reaches one candidate needs one lane, so a floor wastes the rest of the wave. Removing
+// it is worse: what those idle work items buy is launch size, and the autotuner cannot make that up
+// because a base word's cost in work items falls by an order of magnitude without them.
+
+#define PCFG_DEV_FLOOR (PCFG_DEV_LANES / PCFG_DEV_WARP)
+
+// The largest work group the device engine's kernels are built for. They keep one odometer per work
+// item in shared memory and one cell descriptor per group of lanes, and both are sized by this, so the
+// host has to hold the group at or below it.
+
+#define PCFG_DEV_GROUP 64
+
+// The granularity a cell's work items are handed out in, which is the work group and not the wave.
+//
+// A wave is the smallest unit that can own a cell, but handing them out by the wave costs more than it
+// saves: a group holds two waves, so two cell descriptors instead of one, and that pushes the shared
+// memory per block over a step of the driver's shared and L1 split. Same instructions, same registers,
+// same occupancy, much worse L1 hit rate.
+//
+// By the group there is one descriptor again. The price is that a cell reaching one candidate costs a
+// whole group rather than a whole wave.
+
+#define PCFG_DEV_WARP PCFG_DEV_GROUP
+
+// Whether an entry is found by multiplying or by looking its offset up.
+//
+// A bucket is a run of terminals a slot draws from, and the device finds entry n of it at
+// pool_off + (n * ent_len). That multiply is the reason a bucket has to agree on byte length, and a
+// pcfg length is a count of characters, so a grammar with multi byte characters has entries of one
+// character length and several byte lengths and the loader has to cut a cost level into one bucket per
+// byte length. On a utf-8 name grammar that is 1159 buckets where 436 would do, and it is why that
+// grammar gets 3.8 candidates out of a work item where a latin one gets 8.
+//
+// With this set the pool carries a u32 offset for every entry of every list, a slot's pool_off is an
+// index into that table rather than a byte offset, and entry n is at pool[pool_off + n] and runs to
+// pool[pool_off + n + 1]. A bucket then has to agree on cost and nothing else.
+//
+// What it costs is that a candidate's length stops being a constant of the cell. Every slot behind a
+// slot whose width can change writes at a byte offset that depends on the digits, so the offsets are
+// carried per lane beside the digits, and pw_len changes under the inner loop rather than being
+// settled before it. That is why this is a build option: a grammar whose lists are already of one byte
+// length compiles the whole of it out.
+//
+// The host settles it in global_dev_init () from the grammar, the same way it settles
+// PCFG_DEV_MAXWORD, and hands it over as -D PCFG_DEV_VARLEN. It has to reach the kernel cache key for
+// the same reason that one does; backend.c folds both into extra_value.
+
+#ifndef PCFG_DEV_VARLEN
+#define PCFG_DEV_VARLEN 0
+#endif
+
+// A lane's odometer word.
+//
+// It holds the digit alone when entries are of one byte length. When they are not it also holds the
+// byte offset the slot writes at, which is a running sum over the digits in front of it and therefore
+// per lane rather than per cell. It rides in the top byte of the same word instead of a row of its
+// own, because a second [PCFG_DEV_GROUP][PCFG_DEV_MAXSLOT + 1] row is 2304 bytes of shared memory per
+// work group and the kernel has about a hundred bytes of headroom before it crosses the step of the
+// driver's shared and L1 split, which costs both occupancy and L1 hit rate. An offset is at most
+// PCFG_DEV_MAXBYTE, which is 127, so a byte holds it with room over.
+//
+// What it costs is the top eight bits of the digit, so a bucket may hold 2^24 entries.
+// pcfg_bucket_cap () holds the loader to it.
+
+#define PCFG_ODO_DIGIT(x)     ((x) & 0x00ffffff)
+#define PCFG_ODO_POS(x)       ((x) >> 24)
+#define PCFG_ODO_PACK(d,p)    ((((u32) (p)) << 24) | ((u32) (d)))
+
+#define PCFG_ODO_MAXDIGIT     0x00ffffff
+
+#define PCFG_SLOT_KIND_BYTES 0
+#define PCFG_SLOT_KIND_CASE  1
+
+#define PCFG_SLOT_ENT_LEN(p) (((p) >>  0) & 0xff)
+#define PCFG_SLOT_DST_OFF(p) (((p) >>  8) & 0xff)
+#define PCFG_SLOT_KIND(p)    (((p) >> 16) & 0xff)
+
+// Which slot a carry landing on this one has to start writing from.
+//
+// A capitalisation slot rewrites the bytes of the token in front of it rather than contributing its
+// own, so a step that lands on a mask has to put that token back before the mask can be applied over
+// it. Which slot that is depends only on the kinds of the slots, which the host settles once per cell,
+// so it is settled once per cell rather than by walking backwards over the case slots on every carry.
+// PCFG_DEV_MAXSLOT is 8, so it fits in the byte the other three fields leave.
+
+#define PCFG_SLOT_FROM(p)    (((p) >> 24) & 0xff)
+
+typedef struct pcfg_slot
+{
+  // Where the slot's bucket begins.
+  //
+  // Without PCFG_DEV_VARLEN it is the byte offset of the bucket's first entry in the pool and entry n
+  // is at pool_off + (n * ent_len). With it, it is the index of the bucket's first entry in the pool's
+  // offset table and entry n is at pool[pool_off + n]. Both are one u32 and both are the only thing
+  // the device needs to reach an entry, which is why the field is shared rather than doubled.
+
+  u32 pool_off;
+  u32 radix;
+  u32 digit;
+  u32 packed;
+
+} pcfg_slot_t;
+
+typedef struct pcfg_cell
+{
+  u32 slot_cnt;
+
+  // how many candidates the rectangle reaches, which the host already knows and the device would
+  // otherwise have to multiply out of the radices before it could decide anything
+
+  u32 rect;
+
+  // how many of them one lane takes, which is not simply the rectangle divided by the lanes.
+  //
+  // A step of the odometer rewrites every slot from the leftmost digit it changed onwards, and a warp
+  // runs one instruction at a time, so **one lane carrying costs the whole warp the write**. With
+  // radices around five and thirty two lanes at unrelated places in the rectangle, some lane carries
+  // on nearly every step and the warp writes two or three slots where a lane writes one.
+  //
+  // Rounding a lane's run up to a whole number of turns of the last digit puts every lane in the warp
+  // at the same place in that digit, so they carry together or not at all. It is a rounding rather
+  // than a free choice because the lanes still have to tile the rectangle exactly: the union of the
+  // runs is what the kernel enumerates and the plaintext count is what says it still is.
+  //
+  // The host works it out because it has the radices in hand and the kernel would need two more
+  // global reads before it could know, and those reads would land in front of the bounds check that
+  // makes an idle lane cheap.
+
+  u32 blk;
+
+  // Which wave of the launch this cell's first one is. A cell takes as many waves as its rectangle
+  // needs rather than a fixed number, so a work item cannot divide its own id to find its cell: it
+  // reads its cell out of pcfg_wmap, which is indexed by wave, and this is what turns that back into
+  // which part of the rectangle it owns.
+
+  u32 wave_base;
+
+  // What the slots mean, which the kernel knows at build time and the host does not.
+  //
+  // PCFG_DEV_VARLEN is a build option, so a kernel is compiled for one grammar and reads its slots one
+  // way. pcfg_expand_host () is ordinary host code compiled once for every grammar hashcat will ever
+  // run, and it has to produce the same bytes as whichever kernel is loaded, so it is told here rather
+  // than at build time. Bit 0 is set when pool_off is an index into the offset table.
+
+  u32 flags;
+
+  pcfg_slot_t slots[PCFG_DEV_MAXSLOT];
+
+} pcfg_cell_t;
+
+#define PCFG_CELL_VARLEN 1
+
 typedef struct bf
 {
   u32  i;
@@ -1879,7 +2409,7 @@ typedef struct bs_word
 typedef struct plain
 {
   u64  gidvid;
-  u32  il_pos;
+  u64  il_pos;
   u32  salt_pos;
   u32  digest_pos;
   u32  hash_pos;

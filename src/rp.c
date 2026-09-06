@@ -9,6 +9,7 @@
 #include "convert.h"
 #include "event.h"
 #include "shared.h"
+#include "system.h"
 #include "filehandling.h"
 #include "rp.h"
 #include "rp_cpu.h"
@@ -20,6 +21,7 @@ static const char grp_op_nop[] =
   RULE_OP_MANGLE_LREST_UFIRST,
   RULE_OP_MANGLE_UREST_LFIRST,
   RULE_OP_MANGLE_TREST,
+  RULE_OP_MANGLE_SHIFT_CASE,
   RULE_OP_MANGLE_REVERSE,
   RULE_OP_MANGLE_DUPEWORD,
   RULE_OP_MANGLE_REFLECT,
@@ -31,6 +33,8 @@ static const char grp_op_nop[] =
   RULE_OP_MANGLE_SWITCH_LAST,
   RULE_OP_MANGLE_DUPECHAR_ALL,
   RULE_OP_MANGLE_TITLE,
+  RULE_OP_MANGLE_TO_HEX_LOWER,
+  RULE_OP_MANGLE_TO_HEX_UPPER
 };
 
 static const char grp_op_pos_p0[] =
@@ -71,8 +75,10 @@ static const char grp_op_chr_chr[] =
 static const char grp_op_pos_chr[] =
 {
   RULE_OP_MANGLE_INSERT,
+  RULE_OP_MANGLE_INSERT_EVERY,
   RULE_OP_MANGLE_OVERSTRIKE,
-  RULE_OP_MANGLE_TOGGLE_AT_SEP
+  RULE_OP_MANGLE_TOGGLE_AT_SEP,
+  RULE_OP_MANGLE_CHR_ADD
 };
 
 static const char grp_op_pos_pos0[] =
@@ -104,6 +110,21 @@ bool class_lower (const u8 c)
 bool class_upper (const u8 c)
 {
   return ((c >= 'A') && (c <= 'Z'));
+}
+
+bool class_lower_hex (const u8 c)
+{
+  return ((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'f'));
+}
+
+bool class_upper_hex (const u8 c)
+{
+  return ((c >= '0') && (c <= '9')) || ((c >= 'A') && (c <= 'F'));
+}
+
+bool class_sym (const u8 c)
+{
+  return ((c == ' ') || ((c >= '!') && (c <= '/')) || ((c >= ':') && (c <= '@')) || ((c >= '[') && (c <= '`')) || ((c >= '{') && (c <= '~')));
 }
 
 bool class_alpha (const u8 c)
@@ -217,7 +238,7 @@ int generate_random_rule (char rule_buf[RP_RULE_SIZE], const u32 rp_gen_func_min
     }
   }
 
-  return (rule_pos);
+  return rule_pos;
 }
 
 #define INCR_POS if (++rule_pos == rule_len) return (-1)
@@ -245,6 +266,36 @@ bool is_hex_notation (const char *rule_buf, u32 rule_len, u32 rule_pos)
   if (is_valid_hex_char (rule_buf[rule_pos + 3]) == false) return false;
 
   return true;
+}
+
+// How many bytes the rule operand at this position occupies. More than one only when the bytes there
+// are a well formed UTF-8 sequence with every continuation byte present inside the rule, so a rule
+// holding raw bytes or a lone high byte keeps exactly the meaning it has today.
+//
+// The rule engine stays byte oriented. A multibyte operand is sugar for the byte operations a user
+// would otherwise write out by hand, one per byte, and it compiles to exactly those. That is what
+// keeps the host and the device in step: both run the same commands, including at the length limit,
+// where each byte is dropped or kept on its own just as three separate operations would be.
+
+u32 rule_utf8_len (const char *rule_buf, const u32 rule_len, const u32 rule_pos)
+{
+  const u8 c = (u8) rule_buf[rule_pos];
+
+  u32 need = 0;
+
+  if      ((c & 0xe0) == 0xc0) need = 1;
+  else if ((c & 0xf0) == 0xe0) need = 2;
+  else if ((c & 0xf8) == 0xf0) need = 3;
+  else                         return 1;
+
+  if ((rule_pos + need) >= rule_len) return 1;
+
+  for (u32 i = 1; i <= need; i++)
+  {
+    if (((u8) rule_buf[rule_pos + i] & 0xc0) != 0x80) return 1;
+  }
+
+  return need + 1;
 }
 
 int cpu_rule_to_kernel_rule (char *rule_buf, u32 rule_len, kernel_rule_t *rule)
@@ -284,6 +335,10 @@ int cpu_rule_to_kernel_rule (char *rule_buf, u32 rule_len, kernel_rule_t *rule)
         SET_NAME (rule, rule_buf[rule_pos]);
         break;
 
+      case RULE_OP_MANGLE_SHIFT_CASE:
+        SET_NAME (rule, rule_buf[rule_pos]);
+        break;
+
       case RULE_OP_MANGLE_TOGGLE_AT:
         SET_NAME    (rule, rule_buf[rule_pos]);
         SET_P0_CONV (rule, rule_buf[rule_pos]);
@@ -315,14 +370,55 @@ int cpu_rule_to_kernel_rule (char *rule_buf, u32 rule_len, kernel_rule_t *rule)
         break;
 
       case RULE_OP_MANGLE_APPEND:
+      {
+        const u32 mb = rule_utf8_len (rule_buf, rule_len, rule_pos + 1);
+
+        if (mb > 1)
+        {
+          if ((rule_cnt + mb) > MAX_KERNEL_RULES) return -1;
+
+          for (u32 i = 0; i < mb; i++)
+          {
+            rule->cmds[rule_cnt + i] = (RULE_OP_MANGLE_APPEND & 0xff) | ((rule_buf[rule_pos + 1 + i] & 0xff) << 8);
+          }
+
+          rule_pos += mb;
+          rule_cnt += mb - 1;
+
+          break;
+        }
+
         SET_NAME (rule, rule_buf[rule_pos]);
         SET_P0   (rule, rule_buf[rule_pos]);
         break;
+      }
 
       case RULE_OP_MANGLE_PREPEND:
+      {
+        const u32 mb = rule_utf8_len (rule_buf, rule_len, rule_pos + 1);
+
+        if (mb > 1)
+        {
+          if ((rule_cnt + mb) > MAX_KERNEL_RULES) return -1;
+
+          // each prepend puts its byte in front of the one before it, so the bytes go in backwards
+          // for the character to come out forwards
+
+          for (u32 i = 0; i < mb; i++)
+          {
+            rule->cmds[rule_cnt + i] = (RULE_OP_MANGLE_PREPEND & 0xff) | ((rule_buf[rule_pos + mb - i] & 0xff) << 8);
+          }
+
+          rule_pos += mb;
+          rule_cnt += mb - 1;
+
+          break;
+        }
+
         SET_NAME (rule, rule_buf[rule_pos]);
         SET_P0   (rule, rule_buf[rule_pos]);
         break;
+      }
 
       case RULE_OP_MANGLE_DELETE_FIRST:
         SET_NAME (rule, rule_buf[rule_pos]);
@@ -350,16 +446,103 @@ int cpu_rule_to_kernel_rule (char *rule_buf, u32 rule_len, kernel_rule_t *rule)
         break;
 
       case RULE_OP_MANGLE_INSERT:
+      {
+        const u32 mb = rule_utf8_len (rule_buf, rule_len, rule_pos + 2);
+
+        if (mb > 1)
+        {
+          if ((rule_cnt + mb) > MAX_KERNEL_RULES) return -1;
+
+          const int p0 = conv_ctoi (rule_buf[rule_pos + 1]);
+
+          if (p0 == -1) return -1;
+
+          // each byte goes one place further along than the one before it, so the character lands whole
+
+          for (u32 i = 0; i < mb; i++)
+          {
+            rule->cmds[rule_cnt + i] = (RULE_OP_MANGLE_INSERT & 0xff)
+                                     | (((p0 + (int) i) & 0xff) << 8)
+                                     | ((rule_buf[rule_pos + 2 + i] & 0xff) << 16);
+          }
+
+          rule_pos += mb + 1;
+          rule_cnt += mb - 1;
+
+          break;
+        }
+
         SET_NAME    (rule, rule_buf[rule_pos]);
         SET_P0_CONV (rule, rule_buf[rule_pos]);
         SET_P1      (rule, rule_buf[rule_pos]);
         break;
+      }
+
+      case RULE_OP_MANGLE_INSERT_EVERY:
+      {
+        const u32 mb = rule_utf8_len (rule_buf, rule_len, rule_pos + 2);
+
+        if (mb > 1)
+        {
+          if ((rule_cnt + mb) > MAX_KERNEL_RULES) return -1;
+
+          const int p0 = conv_ctoi (rule_buf[rule_pos + 1]);
+
+          if (p0 == -1) return -1;
+
+          // the interval grows by one per byte, which is exactly what keeps the bytes together as the string grows under them
+
+          for (u32 i = 0; i < mb; i++)
+          {
+            rule->cmds[rule_cnt + i] = (RULE_OP_MANGLE_INSERT_EVERY & 0xff)
+                                     | (((p0 + (int) i) & 0xff) << 8)
+                                     | ((rule_buf[rule_pos + 2 + i] & 0xff) << 16);
+          }
+
+          rule_pos += mb + 1;
+          rule_cnt += mb - 1;
+
+          break;
+        }
+
+        SET_NAME    (rule, rule_buf[rule_pos]);
+        SET_P0_CONV (rule, rule_buf[rule_pos]);
+        SET_P1      (rule, rule_buf[rule_pos]);
+        break;
+      }
 
       case RULE_OP_MANGLE_OVERSTRIKE:
+      {
+        const u32 mb = rule_utf8_len (rule_buf, rule_len, rule_pos + 2);
+
+        if (mb > 1)
+        {
+          if ((rule_cnt + mb) > MAX_KERNEL_RULES) return -1;
+
+          const int p0 = conv_ctoi (rule_buf[rule_pos + 1]);
+
+          if (p0 == -1) return -1;
+
+          // consecutive positions, so a character of this many bytes replaces that many bytes
+
+          for (u32 i = 0; i < mb; i++)
+          {
+            rule->cmds[rule_cnt + i] = (RULE_OP_MANGLE_OVERSTRIKE & 0xff)
+                                     | (((p0 + (int) i) & 0xff) << 8)
+                                     | ((rule_buf[rule_pos + 2 + i] & 0xff) << 16);
+          }
+
+          rule_pos += mb + 1;
+          rule_cnt += mb - 1;
+
+          break;
+        }
+
         SET_NAME    (rule, rule_buf[rule_pos]);
         SET_P0_CONV (rule, rule_buf[rule_pos]);
         SET_P1      (rule, rule_buf[rule_pos]);
         break;
+      }
 
       case RULE_OP_MANGLE_TRUNCATE_AT:
         SET_NAME    (rule, rule_buf[rule_pos]);
@@ -428,6 +611,12 @@ int cpu_rule_to_kernel_rule (char *rule_buf, u32 rule_len, kernel_rule_t *rule)
         SET_P0_CONV (rule, rule_buf[rule_pos]);
         break;
 
+      case RULE_OP_MANGLE_CHR_ADD:
+        SET_NAME    (rule, rule_buf[rule_pos]);
+        SET_P0_CONV (rule, rule_buf[rule_pos]);
+        SET_P1      (rule, rule_buf[rule_pos]);
+        break;
+
       case RULE_OP_MANGLE_REPLACE_NP1:
         SET_NAME    (rule, rule_buf[rule_pos]);
         SET_P0_CONV (rule, rule_buf[rule_pos]);
@@ -461,6 +650,90 @@ int cpu_rule_to_kernel_rule (char *rule_buf, u32 rule_len, kernel_rule_t *rule)
         SET_NAME    (rule, rule_buf[rule_pos]);
         SET_P0_CONV (rule, rule_buf[rule_pos]);
         SET_P1      (rule, rule_buf[rule_pos]);
+        break;
+
+      case RULE_OP_MANGLE_TO_HEX_LOWER:
+        SET_NAME    (rule, rule_buf[rule_pos]);
+        break;
+
+      case RULE_OP_MANGLE_TO_HEX_UPPER:
+        SET_NAME    (rule, rule_buf[rule_pos]);
+        break;
+
+      case RULE_OP_CLASS_BASED: // ~
+        // the class operation is the only one that reads its selector before INCR_POS has moved
+        // onto it, so it needs the length test the macro would otherwise have made
+
+        if ((rule_pos + 1) >= rule_len) return -1;
+
+        switch (rule_buf[rule_pos+1])
+        {
+          case RULE_OP_MANGLE_REPLACE: // ~s?CY
+            SET_NAME  (rule, RULE_OP_MANGLE_REPLACE_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            SET_P1    (rule, rule_buf[rule_pos]);
+            break;
+
+          case RULE_OP_MANGLE_PURGECHAR: // ~@?C
+            SET_NAME  (rule, RULE_OP_MANGLE_PURGECHAR_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            break;
+
+          case RULE_OP_MANGLE_TITLE_SEP: // ~e?C
+            SET_NAME  (rule, RULE_OP_MANGLE_TITLE_SEP_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            break;
+
+          /*
+          case '!': // ~!?C
+            SET_NAME  (rule, RULE_OP_REJECT_CONTAIN_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            break;
+          case '/': // ~/?C
+            SET_NAME  (rule, RULE_OP_REJECT_NOT_CONTAIN_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            break;
+          case '(': // ~(?C
+            SET_NAME  (rule, RULE_OP_REJECT_EQUAL_FIRST_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            break;
+          case '(': // ~)?C
+            SET_NAME  (rule, RULE_OP_REJECT_EQUAL_LAST_CLASS);
+            INCR_POS;
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            break;
+          case '=': // ~=N?C
+            SET_NAME  (rule, RULE_OP_REJECT_EQUAL_AT_CLASS);
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            INCR_POS;
+            SET_P1    (rule, rule_buf[rule_pos]);
+            break;
+          case '%': // ~%N?C
+            SET_NAME  (rule, RULE_OP_REJECT_CONTAINS_CLASS);
+            INCR_POS;
+            SET_P0    (rule, rule_buf[rule_pos]);
+            INCR_POS;
+            SET_P1    (rule, rule_buf[rule_pos]);
+            break;
+          */
+          default:
+            return -1;
+        }
+
         break;
 
       default:
@@ -510,6 +783,10 @@ int kernel_rule_to_cpu_rule (char *rule_buf, kernel_rule_t *rule)
         break;
 
       case RULE_OP_MANGLE_TREST:
+        rule_buf[rule_pos] = rule_cmd;
+        break;
+
+      case RULE_OP_MANGLE_SHIFT_CASE:
         rule_buf[rule_pos] = rule_cmd;
         break;
 
@@ -579,6 +856,12 @@ int kernel_rule_to_cpu_rule (char *rule_buf, kernel_rule_t *rule)
         break;
 
       case RULE_OP_MANGLE_INSERT:
+        rule_buf[rule_pos] = rule_cmd;
+        GET_P0_CONV (rule);
+        GET_P1      (rule);
+        break;
+
+      case RULE_OP_MANGLE_INSERT_EVERY:
         rule_buf[rule_pos] = rule_cmd;
         GET_P0_CONV (rule);
         GET_P1      (rule);
@@ -657,6 +940,12 @@ int kernel_rule_to_cpu_rule (char *rule_buf, kernel_rule_t *rule)
         GET_P0_CONV (rule);
         break;
 
+      case RULE_OP_MANGLE_CHR_ADD:
+        rule_buf[rule_pos] = rule_cmd;
+        GET_P0_CONV (rule);
+        GET_P1      (rule);
+        break;
+
       case RULE_OP_MANGLE_REPLACE_NP1:
         rule_buf[rule_pos] = rule_cmd;
         GET_P0_CONV (rule);
@@ -690,6 +979,36 @@ int kernel_rule_to_cpu_rule (char *rule_buf, kernel_rule_t *rule)
         rule_buf[rule_pos] = rule_cmd;
         GET_P0_CONV (rule);
         GET_P1      (rule);
+        break;
+
+      case RULE_OP_MANGLE_TO_HEX_LOWER:
+        rule_buf[rule_pos] = rule_cmd;
+        break;
+
+      case RULE_OP_MANGLE_TO_HEX_UPPER:
+        rule_buf[rule_pos] = rule_cmd;
+        break;
+
+      case RULE_OP_MANGLE_REPLACE_CLASS:
+        rule_buf[rule_pos++] = RULE_OP_CLASS_BASED;
+        rule_buf[rule_pos++] = RULE_OP_MANGLE_REPLACE;
+        rule_buf[rule_pos]   = '?';
+        GET_P0 (rule);
+        GET_P1 (rule);
+        break;
+
+      case RULE_OP_MANGLE_PURGECHAR_CLASS:
+        rule_buf[rule_pos++] = RULE_OP_CLASS_BASED;
+        rule_buf[rule_pos++] = RULE_OP_MANGLE_PURGECHAR;
+        rule_buf[rule_pos]   = '?';
+        GET_P0 (rule);
+        break;
+
+      case RULE_OP_MANGLE_TITLE_SEP_CLASS:
+        rule_buf[rule_pos++] = RULE_OP_CLASS_BASED;
+        rule_buf[rule_pos++] = RULE_OP_MANGLE_TITLE_SEP;
+        rule_buf[rule_pos]   = '?';
+        GET_P0 (rule);
         break;
 
       case 0:
@@ -756,7 +1075,12 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
 
     if (hc_fopen (&fp, rp_file, "rb") == false)
     {
-      event_log_error (hashcat_ctx, "%s: %s", rp_file, strerror (errno));
+      event_log_error (hashcat_ctx, "%s: %s", rp_file, hc_fopen_strerror ());
+
+      for (u32 j = 0; j < i; j++)
+      {
+        hcfree (all_kernel_rules_buf[j]);
+      }
 
       hcfree (all_kernel_rules_cnt);
       hcfree (all_kernel_rules_buf);
@@ -774,6 +1098,15 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
       {
         event_log_error (hashcat_ctx, "Unsupported number of lines in rule file %s.", rp_file);
 
+        hc_fclose (&fp);
+
+        hcfree (kernel_rules_buf);
+
+        for (u32 j = 0; j < i; j++)
+        {
+          hcfree (all_kernel_rules_buf[j]);
+        }
+
         hcfree (all_kernel_rules_cnt);
         hcfree (all_kernel_rules_buf);
 
@@ -790,15 +1123,26 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
 
       if (kernel_rules_avail == kernel_rules_cnt)
       {
-        kernel_rules_buf = (kernel_rule_t *) hcrealloc (kernel_rules_buf, kernel_rules_avail * sizeof (kernel_rule_t), INCR_RULES * sizeof (kernel_rule_t));
-
         const u32 kernel_rules_avail_old = kernel_rules_avail;
 
-        kernel_rules_avail += INCR_RULES;
+        u32 kernel_rules_incr = kernel_rules_avail / 2;
+
+        kernel_rules_incr = MAX (kernel_rules_incr, INCR_RULES);
+
+        kernel_rules_avail += kernel_rules_incr;
 
         if (kernel_rules_avail < kernel_rules_avail_old) // u32 overflow
         {
           event_log_error (hashcat_ctx, "Unsupported number of rules in rule file %s.", rp_file);
+
+          hc_fclose (&fp);
+
+          hcfree (kernel_rules_buf);
+
+          for (u32 j = 0; j < i; j++)
+          {
+            hcfree (all_kernel_rules_buf[j]);
+          }
 
           hcfree (all_kernel_rules_cnt);
           hcfree (all_kernel_rules_buf);
@@ -807,6 +1151,8 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
 
           return -1;
         }
+
+        kernel_rules_buf = (kernel_rule_t *) hcrealloc (kernel_rules_buf, kernel_rules_avail_old * sizeof (kernel_rule_t), kernel_rules_incr * sizeof (kernel_rule_t));
       }
 
       char in[RP_PASSWORD_SIZE];
@@ -819,15 +1165,19 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
 
       if (result == -1)
       {
-        event_log_warning (hashcat_ctx, "Skipping invalid or unsupported rule in file %s on line %u: %s", rp_file, rule_line, rule_buf);
-
+        if (user_options->quiet == false)
+        {
+          event_log_warning (hashcat_ctx, "Skipping invalid or unsupported rule in file %s on line %u: %s", rp_file, rule_line, rule_buf);
+        }
         continue;
       }
 
       if (cpu_rule_to_kernel_rule (rule_buf, rule_len, &kernel_rules_buf[kernel_rules_cnt]) == -1)
       {
-        event_log_warning (hashcat_ctx, "Cannot convert rule for use on OpenCL device in file %s on line %u: %s", rp_file, rule_line, rule_buf);
-
+        if (user_options->quiet == false)
+        {
+          event_log_warning (hashcat_ctx, "Cannot convert rule for use on OpenCL device in file %s on line %u: %s", rp_file, rule_line, rule_buf);
+        }
         memset (&kernel_rules_buf[kernel_rules_cnt], 0, sizeof (kernel_rule_t)); // needs to be cleared otherwise we could have some remaining data
 
         continue;
@@ -836,6 +1186,15 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
       if (kernel_rules_cnt == (u32) -1)
       {
         event_log_error (hashcat_ctx, "Unsupported number of rules in rule file %s.", rp_file);
+
+        hc_fclose (&fp);
+
+        hcfree (kernel_rules_buf);
+
+        for (u32 j = 0; j < i; j++)
+        {
+          hcfree (all_kernel_rules_buf[j]);
+        }
 
         hcfree (all_kernel_rules_cnt);
         hcfree (all_kernel_rules_buf);
@@ -856,6 +1215,35 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
 
   hcfree (rule_buf);
 
+  // One rule file is already the finished array. Chaining it with nothing copies every chain into a
+  // second array of the same size, which for a large ruleset is hundreds of MiB allocated, filled
+  // and then freed to arrive back at what we already had. The chain-overflow check cannot fire with
+  // one file either, because cpu_rule_to_kernel_rule caps a rule at MAX_KERNEL_RULES commands.
+
+  if (user_options->rp_files_cnt == 1)
+  {
+    kernel_rule_t *kernel_rules_buf = all_kernel_rules_buf[0];
+
+    const u32 kernel_rules_cnt = all_kernel_rules_cnt[0];
+
+    hcfree (all_kernel_rules_cnt);
+    hcfree (all_kernel_rules_buf);
+
+    if (kernel_rules_cnt == 0)
+    {
+      event_log_error (hashcat_ctx, "No valid rules left.");
+
+      hcfree (kernel_rules_buf);
+
+      return -1;
+    }
+
+    *out_cnt = kernel_rules_cnt;
+    *out_buf = kernel_rules_buf;
+
+    return 0;
+  }
+
   /**
    * merge rules
    */
@@ -868,25 +1256,24 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
 
   for (u32 i = 0; i < user_options->rp_files_cnt; i++)
   {
-    const u32 kernel_rules_cnt_old = kernel_rules_cnt;
+    if (overflow_check_u32_mul (kernel_rules_cnt, all_kernel_rules_cnt[i]) == true)
+    {
+      event_log_error (hashcat_ctx, "Unsupported number of rules used in rule chaining.");
+
+      for (u32 j = 0; j < user_options->rp_files_cnt; j++)
+      {
+        hcfree (all_kernel_rules_buf[j]);
+      }
+
+      hcfree (all_kernel_rules_cnt);
+      hcfree (all_kernel_rules_buf);
+
+      hcfree (repeats);
+
+      return -1;
+    }
 
     kernel_rules_cnt *= all_kernel_rules_cnt[i];
-
-    if (kernel_rules_cnt < kernel_rules_cnt_old) // u32 overflow ?
-    {
-      if (all_kernel_rules_cnt[i] > 0) // at least one "valid" rule
-      {
-        event_log_error (hashcat_ctx, "Unsupported number of rules used in rule chaining.");
-
-        hcfree (all_kernel_rules_cnt);
-        hcfree (all_kernel_rules_buf);
-
-        hcfree (rule_buf);
-        hcfree (repeats);
-
-        return -1;
-      }
-    }
 
     repeats[i + 1] = kernel_rules_cnt;
   }
@@ -897,6 +1284,11 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
   {
     event_log_error (hashcat_ctx, "Not enough allocatable memory (RAM) for this ruleset.");
 
+    for (u32 j = 0; j < user_options->rp_files_cnt; j++)
+    {
+      hcfree (all_kernel_rules_buf[j]);
+    }
+
     hcfree (all_kernel_rules_cnt);
     hcfree (all_kernel_rules_buf);
 
@@ -905,13 +1297,29 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
     return -1;
   }
 
+  // Both counters count chains, because both are spent as chains: invalid_cnt is how many slots the
+  // output has skipped so far, so it is the distance between the chain being built and where it is
+  // written, and it is subtracted from kernel_rules_cnt at the end. Counting the functions dropped
+  // instead makes that distance grow faster than i does, and the write index turns negative.
+  //
+  // A chain that does not fit is abandoned at the function that overflows it. The remaining files
+  // have nowhere to put their functions either, so walking them only inflated the count.
+
   u32 invalid_cnt = 0;
+  u32 valid_cnt = 0;
 
   for (u32 i = 0; i < kernel_rules_cnt; i++)
   {
     u32 out_pos = 0;
 
     kernel_rule_t *out = &kernel_rules_buf[i - invalid_cnt];
+
+    // the slot is reused when an earlier chain was dropped, so the functions that chain wrote into
+    // it have to go, or a shorter chain landing here later keeps them and runs them
+
+    memset (out, 0, sizeof (kernel_rule_t));
+
+    bool overflow = false;
 
     for (u32 j = 0; j < user_options->rp_files_cnt; j++)
     {
@@ -924,21 +1332,42 @@ int kernel_rules_load (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, u32 
       {
         if (out_pos == RULES_MAX - 1)
         {
-          event_log_warning (hashcat_ctx, "Maximum functions per rule exceeded during chaining of rules, skipping...");
-
-          invalid_cnt++;
+          overflow = true;
 
           break;
         }
 
         out->cmds[out_pos] = in->cmds[in_pos];
       }
+
+      if (overflow == true) break;
     }
+
+    if (overflow == true)
+    {
+      invalid_cnt++;
+    }
+    else
+    {
+      valid_cnt++;
+    }
+  }
+
+  if (invalid_cnt > 0)
+  {
+    event_log_warning (hashcat_ctx, "Maximum functions per rule exceeded during chaining of rules.");
+    event_log_warning (hashcat_ctx, "Skipped %u rule chains, %u valid chains remain.", invalid_cnt, valid_cnt);
+    event_log_warning (hashcat_ctx, NULL);
   }
 
   hcfree (repeats);
 
   kernel_rules_cnt -= invalid_cnt;
+
+  for (u32 j = 0; j < user_options->rp_files_cnt; j++)
+  {
+    hcfree (all_kernel_rules_buf[j]);
+  }
 
   hcfree (all_kernel_rules_cnt);
   hcfree (all_kernel_rules_buf);
@@ -1011,7 +1440,7 @@ int kernel_rules_generate (hashcat_ctx_t *hashcat_ctx, kernel_rule_t **out_buf, 
   {
     if (rp_gen_func_selection == NULL)
     {
-      rp_gen_ops.grp_op_pos_p0_selection[rp_gen_ops.grp_op_pos_p0_cnt] = grp_op_nop[i];
+      rp_gen_ops.grp_op_pos_p0_selection[rp_gen_ops.grp_op_pos_p0_cnt] = grp_op_pos_p0[i];
 
       rp_gen_ops.grp_op_pos_p0_cnt++;
     }

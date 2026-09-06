@@ -112,7 +112,7 @@ DECLSPEC void hmac_sha1_run (PRIVATE_AS u32x *w0, PRIVATE_AS u32x *w1, PRIVATE_A
   sha1_transform_vector (w0, w1, w2, w3, digest);
 }
 
-KERNEL_FQ void m07300_m04 (KERN_ATTR_RULES_ESALT (rakp_t))
+KERNEL_FQ KERNEL_FA void m07300_m04 (KERN_ATTR_RULES_ESALT (rakp_t))
 {
   /**
    * modifier
@@ -126,6 +126,19 @@ KERNEL_FQ void m07300_m04 (KERN_ATTR_RULES_ESALT (rakp_t))
    * s_msg
    */
 
+  #if ATTACK_MODE == 9
+
+  // An association attack takes its salt from the global id, so one copy shared by the whole
+  // workgroup would hold a different hash's salt in every slot. Each thread reads its own straight
+  // out of global memory instead. The attack tries one candidate per hash, so a copy would not pay
+  // for itself here anyway.
+
+  if (gid >= GID_CNT) return;
+
+  GLOBAL_AS const u32 *s_esalt_buf = esalt_bufs[DIGESTS_OFFSET_HOST].salt_buf;
+
+  #else
+
   LOCAL_VK u32 s_esalt_buf[128];
 
   for (u32 i = lid; i < 128; i += lsz)
@@ -136,6 +149,8 @@ KERNEL_FQ void m07300_m04 (KERN_ATTR_RULES_ESALT (rakp_t))
   SYNC_THREADS ();
 
   if (gid >= GID_CNT) return;
+
+  #endif
 
   u32 pw_buf0[4];
   u32 pw_buf1[4];
@@ -240,15 +255,15 @@ KERNEL_FQ void m07300_m04 (KERN_ATTR_RULES_ESALT (rakp_t))
   }
 }
 
-KERNEL_FQ void m07300_m08 (KERN_ATTR_RULES_ESALT (rakp_t))
+KERNEL_FQ KERNEL_FA void m07300_m08 (KERN_ATTR_RULES_ESALT (rakp_t))
 {
 }
 
-KERNEL_FQ void m07300_m16 (KERN_ATTR_RULES_ESALT (rakp_t))
+KERNEL_FQ KERNEL_FA void m07300_m16 (KERN_ATTR_RULES_ESALT (rakp_t))
 {
 }
 
-KERNEL_FQ void m07300_s04 (KERN_ATTR_RULES_ESALT (rakp_t))
+KERNEL_FQ KERNEL_FA void m07300_s04 (KERN_ATTR_RULES_ESALT (rakp_t))
 {
   /**
    * modifier
@@ -262,6 +277,19 @@ KERNEL_FQ void m07300_s04 (KERN_ATTR_RULES_ESALT (rakp_t))
    * s_msg
    */
 
+  #if ATTACK_MODE == 9
+
+  // An association attack takes its salt from the global id, so one copy shared by the whole
+  // workgroup would hold a different hash's salt in every slot. Each thread reads its own straight
+  // out of global memory instead. The attack tries one candidate per hash, so a copy would not pay
+  // for itself here anyway.
+
+  if (gid >= GID_CNT) return;
+
+  GLOBAL_AS const u32 *s_esalt_buf = esalt_bufs[DIGESTS_OFFSET_HOST].salt_buf;
+
+  #else
+
   LOCAL_VK u32 s_esalt_buf[128];
 
   for (u32 i = lid; i < 128; i += lsz)
@@ -272,6 +300,8 @@ KERNEL_FQ void m07300_s04 (KERN_ATTR_RULES_ESALT (rakp_t))
   SYNC_THREADS ();
 
   if (gid >= GID_CNT) return;
+
+  #endif
 
   u32 pw_buf0[4];
   u32 pw_buf1[4];
@@ -388,10 +418,10 @@ KERNEL_FQ void m07300_s04 (KERN_ATTR_RULES_ESALT (rakp_t))
   }
 }
 
-KERNEL_FQ void m07300_s08 (KERN_ATTR_RULES_ESALT (rakp_t))
+KERNEL_FQ KERNEL_FA void m07300_s08 (KERN_ATTR_RULES_ESALT (rakp_t))
 {
 }
 
-KERNEL_FQ void m07300_s16 (KERN_ATTR_RULES_ESALT (rakp_t))
+KERNEL_FQ KERNEL_FA void m07300_s16 (KERN_ATTR_RULES_ESALT (rakp_t))
 {
 }

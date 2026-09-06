@@ -11,6 +11,7 @@
 #include "bitops.h"
 #include "convert.h"
 #include "shared.h"
+#include "parser.h"
 #include "emu_inc_hash_md5.h"
 
 static const u32   ATTACK_EXEC    = ATTACK_EXEC_OUTSIDE_KERNEL;
@@ -82,6 +83,20 @@ typedef struct pdf14_tmp
 
 static const char *SIGNATURE_PDF = "$pdf$";
 
+u32 module_kernel_loops_min (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
+{
+  const u32 kernel_loops_min = 70;
+
+  return kernel_loops_min;
+}
+
+u32 module_kernel_loops_max (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
+{
+  const u32 kernel_loops_max = 70;
+
+  return kernel_loops_max;
+}
+
 static void md5_complete_no_limit (u32 digest[4], const u32 *plain, const u32 plain_len)
 {
   // plain = u32 tmp_md5_buf[64] so this is compatible
@@ -119,33 +134,14 @@ char *module_jit_build_options (MAYBE_UNUSED const hashconfig_t *hashconfig, MAY
 {
   char *jit_build_options = NULL;
 
-  u32 native_threads = 0;
+  // We must override whatever tuningdb entry or -T value was set by the user with this
+  // That's because of RC code in inc_cipher_rc4.cl has this for GPU (different on CPU):
+  // #define KEY32(t,k) (((k) * 32) + ((t) & 31) + (((t) / 32) * 2048))
+  // #define KEY8(t,k) (((k) & 3) + (((k) / 4) * 128) + (((t) & 31) * 4) + (((t) / 32) * 8192))
 
-  if (device_param->opencl_device_type & CL_DEVICE_TYPE_CPU)
-  {
-    native_threads = 1;
-  }
-  else if (device_param->opencl_device_type & CL_DEVICE_TYPE_GPU)
-  {
-    #if defined (__APPLE__)
+  u32 native_threads = (device_param->opencl_device_type & CL_DEVICE_TYPE_CPU) ? 1 : 32;
 
-    native_threads = 32;
-
-    #else
-
-    if (device_param->device_local_mem_size < 49152)
-    {
-      native_threads = MIN (device_param->kernel_preferred_wgs_multiple, 32); // We can't just set 32, because Intel GPU need 8
-    }
-    else
-    {
-      native_threads = device_param->kernel_preferred_wgs_multiple;
-    }
-
-    #endif
-  }
-
-  hc_asprintf (&jit_build_options, "-D FIXED_LOCAL_SIZE=%u -D _unroll", native_threads);
+  hc_asprintf (&jit_build_options, "-D FIXED_LOCAL_SIZE=%u", native_threads);
 
   return jit_build_options;
 }
@@ -174,6 +170,10 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 {
   const char *input_buf = line_buf;
   int   input_len = line_len;
+
+  // tmp_buf has to outlive the block that fills it -- input_buf is pointed at
+  // it and is still read by the second input_tokenizer() call further down
+  char tmp_buf[1024];
 
   // based on m22000 module_hash_decode() we detect both the hashformat with and without user-password
   u32 *digest = (u32 *) digest_buf;
@@ -254,10 +254,11 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
   //check if hashformat without user-password is detected
   if (rc_tokenizer == PARSER_OK)
   {
-    char tmp_buf[1024];
-    int  tmp_len;
+    int tmp_len;
 
-    tmp_len = snprintf (tmp_buf, sizeof (tmp_buf), "%s*", line_buf); // simply add an extra asterisk to denote a empty user-password
+    // line_buf is length-delimited, not NUL-terminated, so "%s" would read
+    // past the end of it
+    tmp_len = snprintf (tmp_buf, sizeof (tmp_buf), "%.*s*", line_len, line_buf); // simply add an extra asterisk to denote a empty user-password
 
     input_buf = tmp_buf;
     input_len = tmp_len;
@@ -354,7 +355,6 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
   //  however we could use it in the comparison of the decrypted o-value,
   //  yet it may make this attack a bit more fragile, as now we just check for ASCII
 
-
   // validate data
 
   pdf->P_minus = 0;
@@ -397,8 +397,15 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
   pdf->R = R;
   pdf->P = P;
 
-  memcpy ( pdf->u_pass_buf, u_pass_buf_pos, 32);
-  pdf->u_pass_len = strlen ((char *) pdf->u_pass_buf);
+  // the user password is the last token and may be anything from 0 to 32 characters, so copying a
+  // fixed 32 reads past the end of the line and puts whatever followed it into the esalt, which
+  // module_hash_encode then prints back out
+
+  const int u_pass_len = token.len[12];
+
+  memcpy (pdf->u_pass_buf, u_pass_buf_pos, u_pass_len);
+
+  pdf->u_pass_len = u_pass_len;
 
   pdf->enc_md = enc_md;
 
@@ -564,7 +571,6 @@ int module_build_plain_postprocess (MAYBE_UNUSED const hashconfig_t *hashconfig,
   return snprintf ((char *) dst_buf, dst_sz, "%s    (user password=%s)", (const char *) src_buf, (const char *) pdf_tmp->out);
 }
 
-
 // TODO how to add the recovered user-password to the hash?
 // module_hash_encode() is called before module_build_plain_postprocess() is
 //  module_hash_encode() doesn't know the recovered password src_buf or the decrypted o-value pdf_tmp->out
@@ -578,9 +584,9 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 
   if (pdf->id_len == 32)
   {
-    const char *line_format = "$pdf$%d*%d*%d*%u*%d*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%s";
+    const char *line_format = "$pdf$%d*%d*%d*%u*%d*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%.*s";
 
-    if (pdf->P_minus == 1) line_format = "$pdf$%d*%d*%d*%d*%d*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%s";
+    if (pdf->P_minus == 1) line_format = "$pdf$%d*%d*%d*%d*%d*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%.*s";
 
     line_len = snprintf (line_buf, line_size, line_format,
       pdf->V,
@@ -615,14 +621,19 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
       byte_swap_32 (pdf->o_buf[5]),
       byte_swap_32 (pdf->o_buf[6]),
       byte_swap_32 (pdf->o_buf[7]),
+      // u_pass_buf is 32 bytes and the parser accepts a user password of exactly 32, which fills it
+      // with no terminator, so %s read the byte after the array and printed it into the line. The
+      // length the parser measured is printed instead.
+
+      pdf->u_pass_len,
       (const char *) pdf->u_pass_buf // TODO just prints the old hash now, we don't edit the hash to add a recovered user-password to it (yet)
     );
   }
   else
   {
-    const char *line_format = "$pdf$%d*%d*%d*%u*%d*%d*%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%s";
+    const char *line_format = "$pdf$%d*%d*%d*%u*%d*%d*%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%.*s";
 
-    if (pdf->P_minus == 1) line_format = "$pdf$%d*%d*%d*%d*%d*%d*%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%s";
+    if (pdf->P_minus == 1) line_format = "$pdf$%d*%d*%d*%d*%d*%d*%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x*%d*%08x%08x%08x%08x%08x%08x%08x%08x%.*s";
 
     line_len = snprintf (line_buf, line_size, line_format,
       pdf->V,
@@ -653,6 +664,11 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
       byte_swap_32 (pdf->o_buf[5]),
       byte_swap_32 (pdf->o_buf[6]),
       byte_swap_32 (pdf->o_buf[7]),
+      // u_pass_buf is 32 bytes and the parser accepts a user password of exactly 32, which fills it
+      // with no terminator, so %s read the byte after the array and printed it into the line. The
+      // length the parser measured is printed instead.
+
+      pdf->u_pass_len,
       (const char *) pdf->u_pass_buf // TODO just prints the old hash now, we don't edit the hash to add a recovered user-password to it (yet)
     );
   }
@@ -665,6 +681,7 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_context_size             = MODULE_CONTEXT_SIZE_CURRENT;
   module_ctx->module_interface_version        = MODULE_INTERFACE_VERSION_CURRENT;
 
+  module_ctx->module_advice_notice            = MODULE_DEFAULT;
   module_ctx->module_attack_exec              = module_attack_exec;
   module_ctx->module_benchmark_esalt          = MODULE_DEFAULT;
   module_ctx->module_benchmark_hook_salt      = MODULE_DEFAULT;
@@ -681,7 +698,6 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_dgst_pos2                = module_dgst_pos2;
   module_ctx->module_dgst_pos3                = module_dgst_pos3;
   module_ctx->module_dgst_size                = module_dgst_size;
-  module_ctx->module_dictstat_disable         = MODULE_DEFAULT;
   module_ctx->module_esalt_size               = module_esalt_size;
   module_ctx->module_extra_buffer_size        = MODULE_DEFAULT;
   module_ctx->module_extra_tmp_size           = MODULE_DEFAULT;
@@ -715,8 +731,8 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_jit_cache_disable        = MODULE_DEFAULT;
   module_ctx->module_kernel_accel_max         = MODULE_DEFAULT;
   module_ctx->module_kernel_accel_min         = MODULE_DEFAULT;
-  module_ctx->module_kernel_loops_max         = MODULE_DEFAULT;
-  module_ctx->module_kernel_loops_min         = MODULE_DEFAULT;
+  module_ctx->module_kernel_loops_max         = module_kernel_loops_max;
+  module_ctx->module_kernel_loops_min         = module_kernel_loops_min;
   module_ctx->module_kernel_threads_max       = MODULE_DEFAULT;
   module_ctx->module_kernel_threads_min       = MODULE_DEFAULT;
   module_ctx->module_kern_type                = module_kern_type;
@@ -739,5 +755,6 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_st_pass                  = module_st_pass;
   module_ctx->module_tmp_size                 = module_tmp_size;
   module_ctx->module_unstable_warning         = module_unstable_warning;
+  module_ctx->module_usage_notice             = MODULE_DEFAULT;
   module_ctx->module_warmup_disable           = MODULE_DEFAULT;
 }

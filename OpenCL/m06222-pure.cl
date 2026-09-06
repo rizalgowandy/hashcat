@@ -106,7 +106,7 @@ DECLSPEC void hmac_sha512_run_V (PRIVATE_AS u32x *w0, PRIVATE_AS u32x *w1, PRIVA
   sha512_transform_vector (w0, w1, w2, w3, w4, w5, w6, w7, digest);
 }
 
-KERNEL_FQ void m06222_init (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
+KERNEL_FQ KERNEL_FA void m06222_init (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);
@@ -118,6 +118,17 @@ KERNEL_FQ void m06222_init (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
 
   const int keyboard_layout_mapping_cnt = esalt_bufs[DIGESTS_OFFSET_HOST].keyboard_layout_mapping_cnt;
 
+  #if ATTACK_MODE == 9
+
+  // An association attack takes its hash from the global id, so a copy shared by the whole
+  // workgroup would hold a different hash's keyboard layout map in every slot. The map is read
+  // out of global memory instead, which is what KEYBOARD_MAP_AS carries into the function that
+  // walks it.
+
+  GLOBAL_AS const keyboard_layout_mapping_t *s_keyboard_layout_mapping_buf = esalt_bufs[DIGESTS_OFFSET_HOST].keyboard_layout_mapping_buf;
+
+  #else
+
   LOCAL_VK keyboard_layout_mapping_t s_keyboard_layout_mapping_buf[256];
 
   for (u32 i = lid; i < 256; i += lsz)
@@ -126,6 +137,8 @@ KERNEL_FQ void m06222_init (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
   }
 
   SYNC_THREADS ();
+
+  #endif
 
   if (gid >= GID_CNT) return;
 
@@ -268,7 +281,7 @@ KERNEL_FQ void m06222_init (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
   }
 }
 
-KERNEL_FQ void m06222_loop (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
+KERNEL_FQ KERNEL_FA void m06222_loop (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -394,7 +407,7 @@ KERNEL_FQ void m06222_loop (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
   }
 }
 
-KERNEL_FQ void m06222_comp (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
+KERNEL_FQ KERNEL_FA void m06222_comp (KERN_ATTR_TMPS_ESALT (tc64_tmp_t, tc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);

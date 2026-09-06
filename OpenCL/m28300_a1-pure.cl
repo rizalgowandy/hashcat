@@ -34,7 +34,7 @@ CONSTANT_VK u32 bin2base64[0x40] =
 #define int_to_base64(c) make_u32x (s_bin2base64[(c).s0], s_bin2base64[(c).s1], s_bin2base64[(c).s2], s_bin2base64[(c).s3], s_bin2base64[(c).s4], s_bin2base64[(c).s5], s_bin2base64[(c).s6], s_bin2base64[(c).s7], s_bin2base64[(c).s8], s_bin2base64[(c).s9], s_bin2base64[(c).sa], s_bin2base64[(c).sb], s_bin2base64[(c).sc], s_bin2base64[(c).sd], s_bin2base64[(c).se], s_bin2base64[(c).sf])
 #endif
 
-KERNEL_FQ void m28300_mxx (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m28300_mxx (KERN_ATTR_BASIC ())
 {
   /**
    * base
@@ -84,6 +84,12 @@ KERNEL_FQ void m28300_mxx (KERN_ATTR_BASIC ())
 
   sha1_init (&ctx0);
 
+  // -a 12 may put a piece of mask in front of the base word, and the context below can then not
+  // be reused. This is the same context one update earlier, so whatever went in before the base
+  // word still goes in only once.
+
+  sha1_ctx_t ctx0_pre = ctx0;
+
   sha1_update_global_swap (&ctx0, pws[gid].i, pws[gid].pw_len);
 
   /**
@@ -94,7 +100,28 @@ KERNEL_FQ void m28300_mxx (KERN_ATTR_BASIC ())
   {
     sha1_ctx_t ctx = ctx0;
 
-    sha1_update_global_swap (&ctx, combs_buf[il_pos].i, combs_buf[il_pos].pw_len);
+    // -a 12 puts the base word inside the amplifier instead of beside it, so a candidate is five
+    // pieces: mask, base word, mask, second word, mask. Any of them may be empty, and the two in the
+    // middle are empty unless the mask carries a ?q.
+    //
+    // Every thread reads the same il_pos, so the branches below are uniform across the warp and the
+    // attack modes that do not take them pay nothing but the compare.
+
+    if (COMBS_IS_MIDDLE)
+    {
+      if (COMBS_PRE (il_pos).pw_len > 0)
+      {
+        ctx = ctx0_pre;
+
+        sha1_update_global_swap (&ctx, COMBS_PRE (il_pos).i, COMBS_PRE (il_pos).pw_len);
+        sha1_update_global_swap (&ctx, pws[gid].i, pws[gid].pw_len);
+      }
+
+      if (COMBS_MID  (il_pos).pw_len > 0) sha1_update_global_swap (&ctx, COMBS_MID  (il_pos).i, COMBS_MID  (il_pos).pw_len);
+      if (COMBS_WORD (il_pos).pw_len > 0) sha1_update_global_swap (&ctx, COMBS_WORD (il_pos).i, COMBS_WORD (il_pos).pw_len);
+    }
+
+    sha1_update_global_swap (&ctx, COMBS_POST (il_pos).i, COMBS_POST (il_pos).pw_len);
 
     sha1_final (&ctx);
 
@@ -180,7 +207,7 @@ KERNEL_FQ void m28300_mxx (KERN_ATTR_BASIC ())
   }
 }
 
-KERNEL_FQ void m28300_sxx (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m28300_sxx (KERN_ATTR_BASIC ())
 {
   /**
    * base
@@ -242,6 +269,12 @@ KERNEL_FQ void m28300_sxx (KERN_ATTR_BASIC ())
 
   sha1_init (&ctx0);
 
+  // -a 12 may put a piece of mask in front of the base word, and the context below can then not
+  // be reused. This is the same context one update earlier, so whatever went in before the base
+  // word still goes in only once.
+
+  sha1_ctx_t ctx0_pre = ctx0;
+
   sha1_update_global_swap (&ctx0, pws[gid].i, pws[gid].pw_len);
 
   /**
@@ -252,7 +285,28 @@ KERNEL_FQ void m28300_sxx (KERN_ATTR_BASIC ())
   {
     sha1_ctx_t ctx = ctx0;
 
-    sha1_update_global_swap (&ctx, combs_buf[il_pos].i, combs_buf[il_pos].pw_len);
+    // -a 12 puts the base word inside the amplifier instead of beside it, so a candidate is five
+    // pieces: mask, base word, mask, second word, mask. Any of them may be empty, and the two in the
+    // middle are empty unless the mask carries a ?q.
+    //
+    // Every thread reads the same il_pos, so the branches below are uniform across the warp and the
+    // attack modes that do not take them pay nothing but the compare.
+
+    if (COMBS_IS_MIDDLE)
+    {
+      if (COMBS_PRE (il_pos).pw_len > 0)
+      {
+        ctx = ctx0_pre;
+
+        sha1_update_global_swap (&ctx, COMBS_PRE (il_pos).i, COMBS_PRE (il_pos).pw_len);
+        sha1_update_global_swap (&ctx, pws[gid].i, pws[gid].pw_len);
+      }
+
+      if (COMBS_MID  (il_pos).pw_len > 0) sha1_update_global_swap (&ctx, COMBS_MID  (il_pos).i, COMBS_MID  (il_pos).pw_len);
+      if (COMBS_WORD (il_pos).pw_len > 0) sha1_update_global_swap (&ctx, COMBS_WORD (il_pos).i, COMBS_WORD (il_pos).pw_len);
+    }
+
+    sha1_update_global_swap (&ctx, COMBS_POST (il_pos).i, COMBS_POST (il_pos).pw_len);
 
     sha1_final (&ctx);
 

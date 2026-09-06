@@ -22,6 +22,7 @@ static const char CL_VENDOR_INTEL_SDK[]         = "Intel(R) Corporation";
 static const char CL_VENDOR_MESA[]              = "Mesa";
 static const char CL_VENDOR_NV[]                = "NVIDIA Corporation";
 static const char CL_VENDOR_POCL[]              = "The pocl project";
+static const char CL_VENDOR_MICROSOFT[]         = "Microsoft";
 
 int  backend_ctx_init                       (hashcat_ctx_t *hashcat_ctx);
 void backend_ctx_destroy                    (hashcat_ctx_t *hashcat_ctx);
@@ -29,9 +30,19 @@ void backend_ctx_destroy                    (hashcat_ctx_t *hashcat_ctx);
 int  backend_ctx_devices_init               (hashcat_ctx_t *hashcat_ctx, const int comptime);
 void backend_ctx_devices_destroy            (hashcat_ctx_t *hashcat_ctx);
 void backend_ctx_devices_sync_tuning        (hashcat_ctx_t *hashcat_ctx);
+bool backend_ctx_devices_tuning_restore     (hashcat_ctx_t *hashcat_ctx);
+
+// Presentation groups. A group is devices that are the same kind of thing, reported as one line. It
+// exists for the status view only: work is fed, tuned and failed per DEVICE. See the comment on
+// backend_ctx_devices_group.
+
+void backend_ctx_devices_group              (hashcat_ctx_t *hashcat_ctx);
+bool backend_ctx_device_is_group_leader     (const hashcat_ctx_t *hashcat_ctx, const int backend_devices_idx);
+int  backend_ctx_device_group_size          (const hashcat_ctx_t *hashcat_ctx, const int backend_devices_idx, int *last_idx);
 void backend_ctx_devices_update_power       (hashcat_ctx_t *hashcat_ctx);
 void backend_ctx_devices_kernel_loops       (hashcat_ctx_t *hashcat_ctx);
 
+void backend_session_context_reset          (hashcat_ctx_t *hashcat_ctx);
 int  backend_session_begin                  (hashcat_ctx_t *hashcat_ctx);
 void backend_session_destroy                (hashcat_ctx_t *hashcat_ctx);
 void backend_session_reset                  (hashcat_ctx_t *hashcat_ctx);
@@ -50,12 +61,17 @@ void generate_cached_kernel_amp_filename    (const u32 attack_kern, char *cache_
 
 bool read_kernel_binary (hashcat_ctx_t *hashcat_ctx, const char *kernel_file, size_t *kernel_lengths, char **kernel_sources);
 
+void pipe_enable                            (const bool enabled, const bool json);
+void pipe_mark                              (hc_timer_t *timer);
+void pipe_acc                               (hc_device_param_t *device_param, const pipe_slot_t slot, hc_timer_t *timer);
+void pipe_launch_done                       (hc_device_param_t *device_param, const u64 cands);
+
 int gidd_to_pw_t                            (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u64 gidd, pw_t *pw);
 
 int copy_pws_idx                            (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, u64 gidd, const u64 cnt, pw_idx_t *dest);
 int copy_pws_comp                           (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, u32 off, u32 cnt, u32 *dest);
 
-int choose_kernel                           (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u32 highest_pw_len, const u64 pws_pos, const u64 pws_cnt, const u32 fast_iteration, const u32 salt_pos);
+int choose_kernel                           (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u32 highest_pw_len, const u64 pws_pos, const u64 pws_cnt, const u32 fast_iteration, const u32 salt_pos, const bool is_autotune);
 
 int run_cuda_kernel_atinit                  (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, CUdeviceptr buf, const u64 num);
 int run_cuda_kernel_utf8toutf16le           (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, CUdeviceptr buf, const u64 num);
@@ -70,11 +86,11 @@ int run_hip_kernel_memset32                 (hashcat_ctx_t *hashcat_ctx, hc_devi
 int run_hip_kernel_bzero                    (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, hipDeviceptr_t buf, const u64 size);
 
 #if defined (__APPLE__)
-int run_metal_kernel_atinit                 (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem buf, const u64 num);
-int run_metal_kernel_utf8toutf16le          (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem buf, const u64 num);
-int run_metal_kernel_memset                 (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem buf, const u64 offset, const u8  value, const u64 size);
-int run_metal_kernel_memset32               (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem buf, const u64 offset, const u32 value, const u64 size);
-int run_metal_kernel_bzero                  (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem buf, const u64 size);
+int run_metal_kernel_atinit                 (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem_t buf, const u64 num);
+int run_metal_kernel_utf8toutf16le          (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem_t buf, const u64 num);
+int run_metal_kernel_memset                 (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem_t buf, const u64 offset, const u8  value, const u64 size);
+int run_metal_kernel_memset32               (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem_t buf, const u64 offset, const u32 value, const u64 size);
+int run_metal_kernel_bzero                  (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, mtl_mem_t buf, const u64 size);
 #endif
 
 int run_opencl_kernel_atinit                (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, cl_mem buf, const u64 num);
@@ -83,17 +99,22 @@ int run_opencl_kernel_memset                (hashcat_ctx_t *hashcat_ctx, hc_devi
 int run_opencl_kernel_memset32              (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, cl_mem buf, const u64 offset, const u32 value, const u64 size);
 int run_opencl_kernel_bzero                 (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, cl_mem buf, const u64 size);
 
-int run_kernel                              (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u32 kern_run, const u64 pws_pos, const u64 num, const u32 event_update, const u32 iteration);
+int run_kernel                              (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u32 kern_run, const u64 pws_pos, const u64 num, const u32 event_update, const u32 iteration, const bool is_autotune);
+int run_bridge_loop                         (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u32 salt_pos, const u64 pws_cnt, const u32 loop_pos, const u32 loop_cnt, const u32 event_update);
 int run_kernel_mp                           (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u32 kern_run, const u64 num);
 int run_kernel_tm                           (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param);
 int run_kernel_amp                          (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u64 num);
 int run_kernel_decompress                   (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u64 num);
 int run_copy                                (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u64 pws_cnt);
+int pcfg_seed_cells                         (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param);
 int run_cracker                             (hashcat_ctx_t *hashcat_ctx, hc_device_param_t *device_param, const u64 pws_pos, const u64 pws_cnt);
 
-HC_API_CALL
-void *hook12_thread (void *p);
-HC_API_CALL
-void *hook23_thread (void *p);
+#if defined (_WIN32) || defined (__WIN32__)
+HC_API_CALL DWORD hook12_thread (void *p);
+HC_API_CALL DWORD hook23_thread (void *p);
+#else
+HC_API_CALL void *hook12_thread (void *p);
+HC_API_CALL void *hook23_thread (void *p);
+#endif
 
 #endif // HC_BACKEND_H

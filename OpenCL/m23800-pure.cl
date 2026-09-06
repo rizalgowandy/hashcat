@@ -42,7 +42,10 @@ typedef struct rar3_hook
 
   u32 first_block_decrypted[4];
 
-  u32 unpack_failed;
+  // One of the HC_RAR3_UNPACK_* values in src/modules/rar3/rar3_status.h, written by the host hook. Zero means
+  // the block unpacked to the expected length, and only then is crc32 worth comparing.
+
+  u32 unpack_status;
 
   u32 crc32;
 
@@ -58,24 +61,8 @@ DECLSPEC void memcat8c_be (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u3
   u32 tmp0;
   u32 tmp1;
 
-  #if ((defined IS_AMD || defined IS_HIP) && HAS_VPERM == 0) || defined IS_GENERIC
-  tmp0 = hc_bytealign_be (0, append, func_len);
-  tmp1 = hc_bytealign_be (append, 0, func_len);
-  #endif
-
-  #if ((defined IS_AMD || defined IS_HIP) && HAS_VPERM == 1) || defined IS_NV
-
-  #if defined IS_NV
-  const int selector = (0x76543210 >> ((func_len & 3) * 4)) & 0xffff;
-  #endif
-
-  #if (defined IS_AMD || defined IS_HIP)
-  const int selector = l32_from_64_S (0x0706050403020100UL >> ((func_len & 3) * 8));
-  #endif
-
-  tmp0 = hc_byte_perm (append, 0, selector);
-  tmp1 = hc_byte_perm (0, append, selector);
-  #endif
+  tmp0 = hc_bytealign_be_S (0, append, func_len);
+  tmp1 = hc_bytealign_be_S (append, 0, func_len);
 
   u32 carry = 0;
 
@@ -749,7 +736,7 @@ DECLSPEC void sha1_update_rar29 (PRIVATE_AS sha1_ctx_t *ctx, PRIVATE_AS u32 *w, 
   }
 }
 
-KERNEL_FQ void m23800_init (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
+KERNEL_FQ KERNEL_FA void m23800_init (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
 {
   /**
    * base
@@ -817,7 +804,7 @@ KERNEL_FQ void m23800_init (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t,
   tmps[gid].iv[3] = 0;
 }
 
-KERNEL_FQ void m23800_loop (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
+KERNEL_FQ KERNEL_FA void m23800_loop (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -933,7 +920,7 @@ KERNEL_FQ void m23800_loop (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t,
   }
 }
 
-KERNEL_FQ void m23800_hook23 (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
+KERNEL_FQ KERNEL_FA void m23800_hook23 (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);
@@ -1088,7 +1075,7 @@ KERNEL_FQ void m23800_hook23 (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_
   hooks[gid].first_block_decrypted[3] = hc_swap32_S (out[3]);
 }
 
-KERNEL_FQ void m23800_comp (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
+KERNEL_FQ KERNEL_FA void m23800_comp (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t, rar3_t))
 {
   /**
    * base
@@ -1098,7 +1085,7 @@ KERNEL_FQ void m23800_comp (KERN_ATTR_TMPS_HOOKS_ESALT (rar3_tmp_t, rar3_hook_t,
 
   if (gid >= GID_CNT) return;
 
-  if (hooks[gid].unpack_failed == 1) return;
+  if (hooks[gid].unpack_status != 0) return;
 
   u32 crc32 = hooks[gid].crc32;
 

@@ -1,12 +1,30 @@
-#!/bin/sh
+#!/usr/bin/env sh
 
 ##
 ## Author......: See docs/credits.txt
 ## License.....: MIT
 ##
 
-export IN=$HOME/hashcat
-export OUT=$HOME/xy/hashcat-6.2.6
+export VERSION=7.1.2
+export MAJOR=${VERSION%%.*}
+
+export IN=.
+export OUT=$HOME/xy/hashcat-$VERSION
+
+# what the archive is laid out around: a frontend per platform and the core each one shares with its
+# plugins. A make that stopped early leaves some of them behind, and packing what is there produces
+# an archive that looks ordinary and cannot run, so the name of the missing one is said here instead
+
+for artifact in hashcat.bin hashcat.exe libhashcat.so.$MAJOR hashcat.dll; do
+
+  if [ -f "$IN/$artifact" ]; then
+    continue
+  fi
+
+  echo "! $artifact was not built. The archive is laid out around it, so nothing is packed."
+  exit 1
+
+done
 
 rm -rf $OUT
 rm -rf $OUT.7z
@@ -15,24 +33,76 @@ mkdir -p $OUT
 
 mkdir -p $OUT/tools
 mkdir -p $OUT/Python
+mkdir -p $OUT/Rust/hashcat-sys
+mkdir -p $OUT/Rust/bridges/generic_hash
+mkdir -p $OUT/Rust/bridges/dynamic_hash
 
 cp    $IN/hashcat.exe                   $OUT/
 cp    $IN/hashcat.bin                   $OUT/
 cp    $IN/hashcat.hcstat2               $OUT/
+
+# the core each binary and its plugins share. On Linux it is found beside hashcat.bin and one
+# directory above every plugin, on Windows it is found beside hashcat.exe, so the archive is
+# unpacked and run with nothing set in the environment
+
+cp    $IN/libhashcat.so.$MAJOR          $OUT/
+cp    $IN/hashcat.dll                   $OUT/
+
+# The compressors, for the Windows package only. hashcat loads these at runtime, and a Linux or macOS
+# box gets them from the system, but Windows provides none of them. Without liblzma the package
+# cannot read its own hashcat.hcstat2 and every mask attack fails, so it is not optional there.
+#
+# WIN_DLL_DIR is set by the build image, which compiles them from pinned upstream tags. A build
+# outside that image simply has nothing to copy, which is the case on a developer's machine. Where
+# the image did set it, a missing compressor is treated the way a missing binary is above: an archive
+# that packed without one would look ordinary and fail on the first mask attack.
+
+if [ -n "$WIN_DLL_DIR" ]; then
+
+  for compressor in liblzma.dll zlib1.dll libzstd.dll; do
+
+    if [ -f "$WIN_DLL_DIR/$compressor" ]; then
+      continue
+    fi
+
+    echo "! $compressor was not built. The Windows package cannot read its own hashcat.hcstat2 without it, so nothing is packed."
+    exit 1
+
+  done
+
+  cp $WIN_DLL_DIR/*.dll $OUT/
+
+fi
 
 cp -r $IN/docs                          $OUT/
 cp -r $IN/charsets                      $OUT/
 cp -r $IN/layouts                       $OUT/
 cp -r $IN/masks                         $OUT/
 cp -r $IN/bridges                       $OUT/
+cp -r $IN/feeds                         $OUT/
 cp -r $IN/modules                       $OUT/
 cp -r $IN/rules                         $OUT/
 cp -r $IN/extra                         $OUT/
 cp -r $IN/tunings                       $OUT/
+
+# The PCFG rulesets, which are what -a 4 runs with no ruleset named. Not in the line ending passes
+# below: a ruleset is one .tar.xz and converting it is corrupting it.
+
+cp -r $IN/pcfg                          $OUT/
+
 cp    $IN/example.dict                  $OUT/
 cp    $IN/example[0123456789]*.hash     $OUT/
 cp    $IN/example[0123456789]*.cmd      $OUT/
 cp -r $IN/Python/*.py                   $OUT/Python/
+cp -r $IN/Rust/hashcat-sys/src                  $OUT/Rust/hashcat-sys/
+cp    $IN/Rust/hashcat-sys/Cargo.*              $OUT/Rust/hashcat-sys/
+cp    $IN/Rust/hashcat-sys/build.rs             $OUT/Rust/hashcat-sys/
+cp -r $IN/Rust/bridges/generic_hash/src         $OUT/Rust/bridges/generic_hash/
+cp    $IN/Rust/bridges/generic_hash/Cargo.*     $OUT/Rust/bridges/generic_hash/
+cp    $IN/Rust/bridges/generic_hash/build.rs    $OUT/Rust/bridges/generic_hash/
+cp -r $IN/Rust/bridges/dynamic_hash/src         $OUT/Rust/bridges/dynamic_hash/
+cp    $IN/Rust/bridges/dynamic_hash/Cargo.*     $OUT/Rust/bridges/dynamic_hash/
+cp    $IN/Rust/bridges/dynamic_hash/build.rs    $OUT/Rust/bridges/dynamic_hash/
 cp -r $IN/OpenCL                        $OUT/
 cp    $IN/tools/*hashcat.pl             $OUT/tools/
 cp    $IN/tools/*hashcat.py             $OUT/tools/
@@ -85,6 +155,10 @@ chmod 755 $OUT/masks
 chmod 644 $OUT/masks/*
 chmod 755 $OUT/bridges
 chmod 644 $OUT/bridges/*
+chmod 755 $OUT/bridges/subs
+chmod 644 $OUT/bridges/subs/*
+chmod 755 $OUT/feeds
+chmod 644 $OUT/feeds/*
 chmod 755 $OUT/modules
 chmod 644 $OUT/modules/*
 chmod 644 $OUT/example*
@@ -94,12 +168,18 @@ chmod 755 $OUT/extra/tab_completion/*.sh
 chmod 755 $OUT/extra/tab_completion/install
 chmod 755 $OUT/Python
 chmod 644 $OUT/Python/*
+chmod 755 $OUT/Rust
+#chmod 644 $OUT/Python/*
 chmod 755 $OUT/OpenCL
 chmod 644 $OUT/OpenCL/*
 chmod 755 $OUT/tunings
 chmod 644 $OUT/tunings/*
+chmod 755 $OUT/pcfg
+chmod 644 $OUT/pcfg/*
 chmod 644 $OUT/*.exe
+chmod 644 $OUT/*.dll
 chmod 755 $OUT/*.bin
+chmod 755 $OUT/libhashcat.so.$MAJOR
 chmod 644 $OUT/hashcat.hcstat2
 chmod 755 $OUT/tools/*hashcat.pl
 chmod 755 $OUT/tools/*hashcat.py

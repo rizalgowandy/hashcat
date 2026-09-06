@@ -144,7 +144,7 @@ DECLSPEC void hmac_whirlpool_run_V (PRIVATE_AS u32x *w0, PRIVATE_AS u32x *w1, PR
   whirlpool_transform_vector (w0, w1, w2, w3, digest, s_MT0, s_MT1, s_MT2, s_MT3, s_MT4, s_MT5, s_MT6, s_MT7);
 }
 
-KERNEL_FQ void m06232_init (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
+KERNEL_FQ KERNEL_FA void m06232_init (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);
@@ -156,6 +156,17 @@ KERNEL_FQ void m06232_init (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
 
   const int keyboard_layout_mapping_cnt = esalt_bufs[DIGESTS_OFFSET_HOST].keyboard_layout_mapping_cnt;
 
+  #if ATTACK_MODE == 9
+
+  // An association attack takes its hash from the global id, so a copy shared by the whole
+  // workgroup would hold a different hash's keyboard layout map in every slot. The map is read
+  // out of global memory instead, which is what KEYBOARD_MAP_AS carries into the function that
+  // walks it.
+
+  GLOBAL_AS const keyboard_layout_mapping_t *s_keyboard_layout_mapping_buf = esalt_bufs[DIGESTS_OFFSET_HOST].keyboard_layout_mapping_buf;
+
+  #else
+
   LOCAL_VK keyboard_layout_mapping_t s_keyboard_layout_mapping_buf[256];
 
   for (u32 i = lid; i < 256; i += lsz)
@@ -164,6 +175,8 @@ KERNEL_FQ void m06232_init (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
   }
 
   SYNC_THREADS ();
+
+  #endif
 
   /**
    * Whirlpool shared
@@ -360,7 +373,7 @@ KERNEL_FQ void m06232_init (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
   }
 }
 
-KERNEL_FQ void m06232_loop (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
+KERNEL_FQ KERNEL_FA void m06232_loop (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
 {
   /**
    * Whirlpool shared
@@ -566,7 +579,7 @@ KERNEL_FQ void m06232_loop (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
   }
 }
 
-KERNEL_FQ void m06232_comp (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
+KERNEL_FQ KERNEL_FA void m06232_comp (KERN_ATTR_TMPS_ESALT (tc_tmp_t, tc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);

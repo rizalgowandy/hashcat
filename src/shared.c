@@ -5,73 +5,17 @@
 
 #include "common.h"
 #include "types.h"
-#include "convert.h"
 #include "shared.h"
-#include "memory.h"
-#include "ext_lzma.h"
-#include <errno.h>
-
-#if defined (__CYGWIN__)
-#include <sys/cygwin.h>
-#endif
-
-#if defined (__APPLE__)
-#include <sys/sysctl.h>
-#endif
 
 #if defined (_WIN)
-#include <winsock2.h>
+#include <psapi.h>
+#else
+#include <sys/resource.h>
 #endif
+#include "memory.h"
+#include "convert.h"
 
-static const char *const PA_000 = "OK";
-static const char *const PA_001 = "Ignored due to comment";
-static const char *const PA_002 = "Ignored due to zero length";
-static const char *const PA_003 = "Line-length exception";
-static const char *const PA_004 = "Hash-length exception";
-static const char *const PA_005 = "Hash-value exception";
-static const char *const PA_006 = "Salt-length exception";
-static const char *const PA_007 = "Salt-value exception";
-static const char *const PA_008 = "Salt-iteration count exception";
-static const char *const PA_009 = "Separator unmatched";
-static const char *const PA_010 = "Signature unmatched";
-static const char *const PA_011 = "Invalid hccapx file size";
-static const char *const PA_012 = "Invalid hccapx eapol size";
-static const char *const PA_013 = "Invalid psafe2 filesize";
-static const char *const PA_014 = "Invalid psafe3 filesize";
-static const char *const PA_015 = "Invalid truecrypt filesize";
-static const char *const PA_016 = "Invalid veracrypt filesize";
-static const char *const PA_017 = "Invalid SIP directive, only MD5 is supported";
-static const char *const PA_018 = "Hash-file exception";
-static const char *const PA_019 = "Hash-encoding exception";
-static const char *const PA_020 = "Salt-encoding exception";
-static const char *const PA_021 = "Invalid LUKS filesize";
-static const char *const PA_022 = "Invalid LUKS identifier";
-static const char *const PA_023 = "Invalid LUKS version";
-static const char *const PA_024 = "Invalid or unsupported LUKS cipher type";
-static const char *const PA_025 = "Invalid or unsupported LUKS cipher mode";
-static const char *const PA_026 = "Invalid or unsupported LUKS hash type";
-static const char *const PA_027 = "Invalid LUKS key size";
-static const char *const PA_028 = "Disabled LUKS key detected";
-static const char *const PA_029 = "Invalid LUKS key AF stripes count";
-static const char *const PA_030 = "Invalid combination of LUKS hash type and cipher type";
-static const char *const PA_031 = "Invalid hccapx signature";
-static const char *const PA_032 = "Invalid hccapx version";
-static const char *const PA_033 = "Invalid hccapx message pair";
-static const char *const PA_034 = "Token encoding exception";
-static const char *const PA_035 = "Token length exception";
-static const char *const PA_036 = "Insufficient entropy exception";
-static const char *const PA_037 = "Hash contains unsupported compression type for current mode";
-static const char *const PA_038 = "Invalid key size";
-static const char *const PA_039 = "Invalid block size";
-static const char *const PA_040 = "Invalid or unsupported cipher";
-static const char *const PA_041 = "Invalid filesize";
-static const char *const PA_042 = "IV length exception";
-static const char *const PA_043 = "CT length exception";
-static const char *const PA_044 = "PT length exception";
-static const char *const PA_045 = "PT offset exception";
-static const char *const PA_046 = "Invalid or unsupported CryptoAPI hash type";
-static const char *const PA_047 = "Invalid CryptoAPI key size";
-static const char *const PA_255 = "Unknown error";
+#include <stdarg.h>
 
 static const char *const OPTI_STR_OPTIMIZED_KERNEL     = "Optimized-Kernel";
 static const char *const OPTI_STR_ZERO_BYTE            = "Zero-Byte";
@@ -96,6 +40,9 @@ static const char *const OPTI_STR_USES_BITS_8          = "Uses-8-Bit";
 static const char *const OPTI_STR_USES_BITS_16         = "Uses-16-Bit";
 static const char *const OPTI_STR_USES_BITS_32         = "Uses-32-Bit";
 static const char *const OPTI_STR_USES_BITS_64         = "Uses-64-Bit";
+static const char *const OPTI_STR_SLOW_HASH_DIMY_INIT  = "Slow-Hash-DimensionY-INIT";
+static const char *const OPTI_STR_SLOW_HASH_DIMY_LOOP  = "Slow-Hash-DimensionY-LOOP";
+static const char *const OPTI_STR_SLOW_HASH_DIMY_COMP  = "Slow-Hash-DimensionY-COMP";
 
 static const char *const HASH_CATEGORY_UNDEFINED_STR              = "Undefined";
 static const char *const HASH_CATEGORY_RAW_HASH_STR               = "Raw Hash";
@@ -143,59 +90,45 @@ int sort_by_stringptr (const void *p1, const void *p2)
   return strcmp (*s1, *s2);
 }
 
-static inline int get_msb32 (const u32 v)
-{
-  int i;
-
-  for (i = 32; i > 0; i--) if ((v >> (i - 1)) & 1) break;
-
-  return i;
-}
-
-static inline int get_msb64 (const u64 v)
-{
-  int i;
-
-  for (i = 64; i > 0; i--) if ((v >> (i - 1)) & 1) break;
-
-  return i;
-}
-
 bool overflow_check_u32_add (const u32 a, const u32 b)
 {
-  const int a_msb = get_msb32 (a);
-  const int b_msb = get_msb32 (b);
-
-  return ((a_msb < 32) && (b_msb < 32));
+  return a > (UINT32_MAX - b);
 }
 
 bool overflow_check_u32_mul (const u32 a, const u32 b)
 {
-  const int a_msb = get_msb32 (a);
-  const int b_msb = get_msb32 (b);
+  if (a == 0 || b == 0) return false;
 
-  return ((a_msb + b_msb) < 32);
+  return a > (UINT32_MAX / b);
 }
 
 bool overflow_check_u64_add (const u64 a, const u64 b)
 {
-  const int a_msb = get_msb64 (a);
-  const int b_msb = get_msb64 (b);
-
-  return ((a_msb < 64) && (b_msb < 64));
+  return a > (UINT64_MAX - b);
 }
 
 bool overflow_check_u64_mul (const u64 a, const u64 b)
 {
-  const int a_msb = get_msb64 (a);
-  const int b_msb = get_msb64 (b);
+  if (a == 0 || b == 0) return false;
 
-  return ((a_msb + b_msb) < 64);
+  return a > (UINT64_MAX / b);
 }
 
 bool is_power_of_2 (const u32 v)
 {
   return (v && !(v & (v - 1)));
+}
+
+// The odd part of v, which is v with every trailing zero bit shifted out. Zero has no odd part, and
+// the lowest set bit of zero is zero, so the division has to be guarded rather than attempted. A
+// caller reaches this with zero by overflowing an iteration count: a salt holding UINT32_MAX passes
+// a plain non-zero test, and one more than it is zero.
+
+u32 smallest_repeat_double (const u32 v)
+{
+  if (v == 0) return 0;
+
+  return (v / (v & -v));
 }
 
 u32 mydivc32 (const u32 dividend, const u32 divisor)
@@ -214,26 +147,6 @@ u64 mydivc64 (const u64 dividend, const u64 divisor)
   if (dividend % divisor) quotient++;
 
   return quotient;
-}
-
-char *filename_from_filepath (char *filepath)
-{
-  char *ptr = NULL;
-
-  if ((ptr = strrchr (filepath, '/')) != NULL)
-  {
-    ptr++;
-  }
-  else if ((ptr = strrchr (filepath, '\\')) != NULL)
-  {
-    ptr++;
-  }
-  else
-  {
-    ptr = filepath;
-  }
-
-  return ptr;
 }
 
 void naive_replace (char *s, const char key_char, const char replace_char)
@@ -295,9 +208,34 @@ int hc_asprintf (char **strp, const char *fmt, ...)
 #undef __WINDOWS__
 #endif
 
+#if defined (__OpenBSD__)
+static void *qsort_r_context;
+
+static int qsort_r_comparator (const void *a, const void *b)
+{
+    typedef int (*compare_fn_t) (const void *, const void *, void *);
+
+    compare_fn_t cmp = (compare_fn_t) qsort_r_context;
+
+    return cmp (a, b, NULL);
+}
+#endif
+
 void hc_qsort_r (void *base, size_t nmemb, size_t size, int (*compar) (const void *, const void *, void *), void *arg)
 {
+  #if defined (__OpenBSD__)
+
+  (void) arg; // unused, make compiler happy
+
+  qsort_r_context = (void *) compar;
+
+  qsort (base, nmemb, size, qsort_r_comparator);
+
+  #else
+
   sort_r (base, nmemb, size, compar, arg);
+
+  #endif
 }
 
 void *hc_bsearch_r (const void *key, const void *base, size_t nmemb, size_t size, int (*compar) (const void *, const void *, void *), void *arg)
@@ -323,119 +261,6 @@ void *hc_bsearch_r (const void *key, const void *base, size_t nmemb, size_t size
   }
 
   return (NULL);
-}
-
-bool hc_path_is_file (const char *path)
-{
-  struct stat s;
-
-  memset (&s, 0, sizeof (s));
-
-  if (stat (path, &s) == -1) return false;
-
-  if (S_ISREG (s.st_mode)) return true;
-
-  return false;
-}
-
-bool hc_path_is_directory (const char *path)
-{
-  struct stat s;
-
-  memset (&s, 0, sizeof (s));
-
-  if (stat (path, &s) == -1) return false;
-
-  if (S_ISDIR (s.st_mode)) return true;
-
-  return false;
-}
-
-bool hc_path_is_fifo (const char *path)
-{
-  struct stat s;
-
-  memset (&s, 0, sizeof (s));
-
-  if (stat (path, &s) == -1) return false;
-
-  if (S_ISFIFO (s.st_mode) == true) return true;
-
-  return false;
-}
-
-bool hc_path_is_empty (const char *path)
-{
-  struct stat s;
-
-  memset (&s, 0, sizeof (s));
-
-  if (stat (path, &s) == -1) return false;
-
-  if (s.st_size == 0) return true;
-
-  return false;
-}
-
-bool hc_path_exist (const char *path)
-{
-  if (access (path, F_OK) == -1) return false;
-
-  return true;
-}
-
-bool hc_path_read (const char *path)
-{
-  if (access (path, R_OK) == -1) return false;
-
-  return true;
-}
-
-bool hc_path_write (const char *path)
-{
-  if (access (path, W_OK) == -1) return false;
-
-  return true;
-}
-
-bool hc_path_create (const char *path)
-{
-  if (hc_path_exist (path) == true) return false;
-
-#ifdef O_CLOEXEC
-  const int fd = open (path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
-#else
-  const int fd = open (path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-#endif
-
-  if (fd == -1) return false;
-
-  close (fd);
-
-  unlink (path);
-
-  return true;
-}
-
-bool hc_path_has_bom (const char *path)
-{
-  u8 buf[8] = { 0 };
-
-  HCFILE fp;
-
-  if (hc_fopen_raw (&fp, path, "rb") == false) return false;
-
-  const size_t nread = hc_fread (buf, 1, sizeof (buf), &fp);
-
-  hc_fclose (&fp);
-
-  if (nread < 1) return false;
-
-  const int bom_size = hc_string_bom_size (buf);
-
-  const bool has_bom = bom_size > 0;
-
-  return has_bom;
 }
 
 int hc_string_bom_size (const u8 *s)
@@ -549,96 +374,6 @@ bool hc_string_is_digit (const char *s)
   return true;
 }
 
-void setup_environment_variables (const folder_config_t *folder_config)
-{
-  char *compute = getenv ("COMPUTE");
-
-  if (compute)
-  {
-    char *display;
-
-    hc_asprintf (&display, "DISPLAY=%s", compute);
-
-    putenv (display);
-
-    hcfree (display);
-  }
-  else
-  {
-    if (getenv ("DISPLAY") == NULL)
-      putenv ((char *) "DISPLAY=:0");
-  }
-
-  #if defined (DEBUG)
-  if (getenv ("OCL_CODE_CACHE_ENABLE") == NULL)
-    putenv ((char *) "OCL_CODE_CACHE_ENABLE=0");
-
-  if (getenv ("CUDA_CACHE_DISABLE") == NULL)
-    putenv ((char *) "CUDA_CACHE_DISABLE=1");
-
-  if (getenv ("POCL_KERNEL_CACHE") == NULL)
-    putenv ((char *) "POCL_KERNEL_CACHE=0");
-  #endif
-
-  if (getenv ("TMPDIR") == NULL)
-  {
-    char *tmpdir = NULL;
-
-    hc_asprintf (&tmpdir, "TMPDIR=%s", folder_config->profile_dir);
-
-    putenv (tmpdir);
-
-    // we can't free tmpdir at this point!
-  }
-
-  /*
-  if (getenv ("CL_CONFIG_USE_VECTORIZER") == NULL)
-    putenv ((char *) "CL_CONFIG_USE_VECTORIZER=False");
-  */
-
-  #if defined (__CYGWIN__)
-  cygwin_internal (CW_SYNC_WINENV);
-  #endif
-}
-
-void setup_umask (void)
-{
-  umask (077);
-}
-
-void setup_seeding (const bool rp_gen_seed_chgd, const u32 rp_gen_seed)
-{
-  if (rp_gen_seed_chgd == true)
-  {
-    srand (rp_gen_seed);
-  }
-  else
-  {
-    const time_t ts = time (NULL); // don't tell me that this is an insecure seed
-
-    srand ((unsigned int) ts);
-  }
-}
-
-u32 get_random_num (const u32 min, const u32 max)
-{
-  if (min == max) return (min);
-
-  const u32 low = max - min;
-
-  if (low == 0) return (0);
-
-  #if defined (_WIN)
-
-  return (((u32) rand () % (max - min + 1)) + min);
-
-  #else
-
-  return (((u32) random () % (max - min + 1)) + min);
-
-  #endif
-}
-
 void hc_string_trim_leading (char *s)
 {
   int skip = 0;
@@ -683,118 +418,6 @@ void hc_string_trim_trailing (char *s)
   const size_t new_len = len - skip;
 
   s[new_len] = 0;
-}
-
-int hc_get_processor_count (void)
-{
-  int cnt = 0;
-
-  #if defined (_WIN)
-
-  SYSTEM_INFO info;
-
-  GetSystemInfo (&info);
-
-  cnt = (int) info.dwNumberOfProcessors;
-
-  #else
-
-  cnt = (int) sysconf (_SC_NPROCESSORS_ONLN);
-
-  #endif
-
-  return cnt;
-}
-
-bool hc_same_files (char *file1, char *file2)
-{
-  if ((file1 != NULL) && (file2 != NULL))
-  {
-    if (hc_path_is_fifo (file1) == true || hc_path_is_fifo (file2) == true)
-    {
-      return false;
-    }
-
-    struct stat tmpstat_file1;
-    struct stat tmpstat_file2;
-
-    memset (&tmpstat_file1, 0, sizeof (tmpstat_file1));
-    memset (&tmpstat_file2, 0, sizeof (tmpstat_file2));
-
-    int do_check = 0;
-
-    HCFILE fp;
-
-    if (hc_fopen (&fp, file1, "r") == true)
-    {
-      if (hc_fstat (&fp, &tmpstat_file1))
-      {
-        hc_fclose (&fp);
-
-        return false;
-      }
-
-      hc_fclose (&fp);
-
-      do_check++;
-    }
-
-    if (hc_fopen (&fp, file2, "r") == true)
-    {
-      if (hc_fstat (&fp, &tmpstat_file2))
-      {
-        hc_fclose (&fp);
-
-        return false;
-      }
-
-      hc_fclose (&fp);
-
-      do_check++;
-    }
-
-    if (do_check == 2)
-    {
-      tmpstat_file1.st_mode     = 0;
-      tmpstat_file1.st_nlink    = 0;
-      tmpstat_file1.st_uid      = 0;
-      tmpstat_file1.st_gid      = 0;
-      tmpstat_file1.st_rdev     = 0;
-      tmpstat_file1.st_atime    = 0;
-
-      #if defined (STAT_NANOSECONDS_ACCESS_TIME)
-      tmpstat_file1.STAT_NANOSECONDS_ACCESS_TIME = 0;
-      #endif
-
-      #if defined (_POSIX)
-      tmpstat_file1.st_blksize  = 0;
-      tmpstat_file1.st_blocks   = 0;
-      #endif
-
-      tmpstat_file2.st_mode     = 0;
-      tmpstat_file2.st_nlink    = 0;
-      tmpstat_file2.st_uid      = 0;
-      tmpstat_file2.st_gid      = 0;
-      tmpstat_file2.st_rdev     = 0;
-      tmpstat_file2.st_atime    = 0;
-
-      #if defined (STAT_NANOSECONDS_ACCESS_TIME)
-      tmpstat_file2.STAT_NANOSECONDS_ACCESS_TIME = 0;
-      #endif
-
-      #if defined (_POSIX)
-      tmpstat_file2.st_blksize  = 0;
-      tmpstat_file2.st_blocks   = 0;
-      #endif
-
-      if (memcmp (&tmpstat_file1, &tmpstat_file2, sizeof (struct stat)) == 0)
-      {
-        return true;
-      }
-    }
-  }
-
-  return false;
 }
 
 u32 hc_strtoul (const char *nptr, char **endptr, int base)
@@ -906,94 +529,6 @@ float get_entropy (const u8 *buf, const int len)
   return entropy;
 }
 
-int select_read_timeout (int sockfd, const int sec)
-{
-  struct timeval tv;
-
-  tv.tv_sec  = sec;
-  tv.tv_usec = 0;
-
-  fd_set fds;
-
-  FD_ZERO (&fds);
-#if defined(_WIN)
-  FD_SET ((SOCKET)sockfd, &fds);
-#else
-  FD_SET (sockfd, &fds);
-#endif
-
-  return select (sockfd + 1, &fds, NULL, NULL, &tv);
-}
-
-int select_write_timeout (int sockfd, const int sec)
-{
-  struct timeval tv;
-
-  tv.tv_sec  = sec;
-  tv.tv_usec = 0;
-
-  fd_set fds;
-
-  FD_ZERO (&fds);
-#if defined(_WIN)
-  FD_SET ((SOCKET)sockfd, &fds);
-#else
-  FD_SET (sockfd, &fds);
-#endif
-
-  return select (sockfd + 1, NULL, &fds, NULL, &tv);
-}
-
-#if defined (_WIN)
-
-int select_read_timeout_console (const int sec)
-{
-  const HANDLE hStdIn = GetStdHandle (STD_INPUT_HANDLE);
-
-  const DWORD rc = WaitForSingleObject (hStdIn, sec * 1000);
-
-  if (rc == WAIT_OBJECT_0)
-  {
-    DWORD dwRead;
-
-    INPUT_RECORD inRecords;
-
-    inRecords.EventType = 0;
-
-    PeekConsoleInput (hStdIn, &inRecords, 1, &dwRead);
-
-    if (inRecords.EventType == 0)
-    {
-      // those are good ones
-
-      return 1;
-    }
-    else
-    {
-      // but we don't want that stuff like windows focus etc. in our stream
-
-      ReadConsoleInput (hStdIn, &inRecords, 1, &dwRead);
-    }
-
-    return select_read_timeout_console (sec);
-  }
-  else if (rc == WAIT_TIMEOUT)
-  {
-    return 0;
-  }
-
-  return -1;
-}
-
-#else
-
-int select_read_timeout_console (const int sec)
-{
-  return select_read_timeout (fileno (stdin), sec);
-}
-
-#endif
-
 const char *strhashcategory (const u32 hash_category)
 {
   switch (hash_category)
@@ -1051,6 +586,9 @@ const char *stroptitype (const u32 opti_type)
     case OPTI_TYPE_SLOW_HASH_SIMD_LOOP:  return OPTI_STR_SLOW_HASH_SIMD_LOOP;
     case OPTI_TYPE_SLOW_HASH_SIMD_LOOP2: return OPTI_STR_SLOW_HASH_SIMD_LOOP2;
     case OPTI_TYPE_SLOW_HASH_SIMD_COMP:  return OPTI_STR_SLOW_HASH_SIMD_COMP;
+    case OPTI_TYPE_SLOW_HASH_DIMY_INIT:  return OPTI_STR_SLOW_HASH_DIMY_INIT;
+    case OPTI_TYPE_SLOW_HASH_DIMY_LOOP:  return OPTI_STR_SLOW_HASH_DIMY_LOOP;
+    case OPTI_TYPE_SLOW_HASH_DIMY_COMP:  return OPTI_STR_SLOW_HASH_DIMY_COMP;
     case OPTI_TYPE_USES_BITS_8:          return OPTI_STR_USES_BITS_8;
     case OPTI_TYPE_USES_BITS_16:         return OPTI_STR_USES_BITS_16;
     case OPTI_TYPE_USES_BITS_32:         return OPTI_STR_USES_BITS_32;
@@ -1060,451 +598,304 @@ const char *stroptitype (const u32 opti_type)
   return NULL;
 }
 
-const char *strparser (const u32 parser_status)
+u32 previous_power_of_two (const u32 x)
 {
-  switch (parser_status)
-  {
-    case PARSER_OK:                   return PA_000;
-    case PARSER_COMMENT:              return PA_001;
-    case PARSER_GLOBAL_ZERO:          return PA_002;
-    case PARSER_GLOBAL_LENGTH:        return PA_003;
-    case PARSER_HASH_LENGTH:          return PA_004;
-    case PARSER_HASH_VALUE:           return PA_005;
-    case PARSER_SALT_LENGTH:          return PA_006;
-    case PARSER_SALT_VALUE:           return PA_007;
-    case PARSER_SALT_ITERATION:       return PA_008;
-    case PARSER_SEPARATOR_UNMATCHED:  return PA_009;
-    case PARSER_SIGNATURE_UNMATCHED:  return PA_010;
-    case PARSER_HCCAPX_FILE_SIZE:     return PA_011;
-    case PARSER_HCCAPX_EAPOL_LEN:     return PA_012;
-    case PARSER_PSAFE2_FILE_SIZE:     return PA_013;
-    case PARSER_PSAFE3_FILE_SIZE:     return PA_014;
-    case PARSER_TC_FILE_SIZE:         return PA_015;
-    case PARSER_VC_FILE_SIZE:         return PA_016;
-    case PARSER_SIP_AUTH_DIRECTIVE:   return PA_017;
-    case PARSER_HASH_FILE:            return PA_018;
-    case PARSER_HASH_ENCODING:        return PA_019;
-    case PARSER_SALT_ENCODING:        return PA_020;
-    case PARSER_LUKS_FILE_SIZE:       return PA_021;
-    case PARSER_LUKS_MAGIC:           return PA_022;
-    case PARSER_LUKS_VERSION:         return PA_023;
-    case PARSER_LUKS_CIPHER_TYPE:     return PA_024;
-    case PARSER_LUKS_CIPHER_MODE:     return PA_025;
-    case PARSER_LUKS_HASH_TYPE:       return PA_026;
-    case PARSER_LUKS_KEY_SIZE:        return PA_027;
-    case PARSER_LUKS_KEY_DISABLED:    return PA_028;
-    case PARSER_LUKS_KEY_STRIPES:     return PA_029;
-    case PARSER_LUKS_HASH_CIPHER:     return PA_030;
-    case PARSER_HCCAPX_SIGNATURE:     return PA_031;
-    case PARSER_HCCAPX_VERSION:       return PA_032;
-    case PARSER_HCCAPX_MESSAGE_PAIR:  return PA_033;
-    case PARSER_TOKEN_ENCODING:       return PA_034;
-    case PARSER_TOKEN_LENGTH:         return PA_035;
-    case PARSER_INSUFFICIENT_ENTROPY: return PA_036;
-    case PARSER_PKZIP_CT_UNMATCHED:   return PA_037;
-    case PARSER_KEY_SIZE:             return PA_038;
-    case PARSER_BLOCK_SIZE:           return PA_039;
-    case PARSER_CIPHER:               return PA_040;
-    case PARSER_FILE_SIZE:            return PA_041;
-    case PARSER_IV_LENGTH:            return PA_042;
-    case PARSER_CT_LENGTH:            return PA_043;
-    case PARSER_PT_LENGTH:            return PA_044;
-    case PARSER_PT_OFFSET:            return PA_045;
-    case PARSER_CRYPTOAPI_KERNELTYPE: return PA_046;
-    case PARSER_CRYPTOAPI_KEYSIZE:    return PA_047;
-  }
+  // https://stackoverflow.com/questions/2679815/previous-power-of-2
+  // really cool!
 
-  return PA_255;
+  if (x == 0) return 0;
+
+  u32 r = x;
+
+  r |= (r >>  1);
+  r |= (r >>  2);
+  r |= (r >>  4);
+  r |= (r >>  8);
+  r |= (r >> 16);
+
+  return r - (r >> 1);
 }
 
-static int rounds_count_length (const char *input_buf, const int input_len)
+u32 next_power_of_two (const u32 x)
 {
-  if (input_len >= 9) // 9 is minimum because of "rounds=X$"
-  {
-    static const char *const rounds = "rounds=";
+  if (x == 0) return 1;
 
-    if (memcmp (input_buf, rounds, 7) == 0)
+  u32 r = x - 1;
+
+  r |= (r >>  1);
+  r |= (r >>  2);
+  r |= (r >>  4);
+  r |= (r >>  8);
+  r |= (r >> 16);
+
+  r++;
+
+  return r;
+}
+
+// Whether an on/off environment switch is set, looked up once.
+//
+// Several of these exist (HASHCAT_PIPE, HASHCAT_MEMORY, HASHCAT_PIPE_SYNC, ...) and each would otherwise
+// carry its own copy of the lookup and its own cache. The cache is what forced the duplication: one
+// static inside a shared function would be a single slot shared by every variable, so the slot stays
+// with the caller and only the logic moves here. Pass a static int initialised to -1.
+//
+// Presence is what counts, not the value, which is how these switches have always behaved.
+
+bool hc_env_flag (const char *name, int *cache)
+{
+  if (*cache == -1) *cache = (getenv (name) != NULL) ? 1 : 0;
+
+  const bool result = (*cache == 1) ? true : false;
+
+  return result;
+}
+
+// Bounded appenders for a fixed size output buffer.
+//
+// A cracked hash is written out by src/outfile.c and by src/potfile.c, and both build the line in one
+// buffer of HCBUFSIZ_LARGE. The username, the hash and the plaintext all originate in the input line,
+// so none of the 3 has a length this code decides. Every write is therefore clamped to the room
+// actually left, and 1 byte is always kept back so that the caller's trailing null lands inside the
+// buffer. A field that does not fit is truncated and the entry itself is still written out.
+//
+// buf_sz is the size of the whole buffer, not the room remaining. Each function returns the new length.
+//
+// These lived in src/outfile.c alone. potfile.c builds the same kind of line into the same size of
+// buffer and had no bound of any kind, which is exactly the shape a second copy of security relevant
+// code takes when it is not shared, so there is one copy and both callers use it.
+
+int hc_append_raw (char *buf, const int len, const int buf_sz, const u8 *src, int src_len)
+{
+  const int room = buf_sz - 1 - len;
+
+  if (src_len > room)
+  {
+    src_len = (room > 0) ? room : 0;
+  }
+
+  memcpy (buf + len, src, (size_t) src_len);
+
+  const int out_len = len + src_len;
+
+  return out_len;
+}
+
+// hex_encode () writes 2 bytes per input byte and no terminator.
+
+int hc_append_hex (char *buf, const int len, const int buf_sz, const u8 *src, int src_len)
+{
+  const int room = buf_sz - 1 - len;
+
+  if ((src_len * 2) > room)
+  {
+    src_len = (room > 0) ? room / 2 : 0;
+  }
+
+  const int out_len = len + hex_encode (src, src_len, (u8 *) buf + len);
+
+  return out_len;
+}
+
+// exec_hexify () writes 2 bytes per input byte and then a terminator, which is what the byte held
+// back above is for. It also clamps its own input to PW_MAX, so it can write less than asked.
+
+int hc_append_hexify (char *buf, const int len, const int buf_sz, const u8 *src, int src_len)
+{
+  const int room = buf_sz - 1 - len;
+
+  if ((src_len * 2) > room)
+  {
+    src_len = (room > 0) ? room / 2 : 0;
+  }
+
+  const size_t hex_len = exec_hexify (src, (size_t) src_len, (u8 *) buf + len);
+
+  const int out_len = len + (int) hex_len;
+
+  return out_len;
+}
+
+int hc_append_chr (char *buf, const int len, const int buf_sz, const char c)
+{
+  if (len >= (buf_sz - 1)) return len;
+
+  buf[len] = c;
+
+  const int out_len = len + 1;
+
+  return out_len;
+}
+
+// Expanding a PCFG cell on the host, so that a crack can be reported as the candidate that produced it
+// rather than as the base word the device started from. This is the same walk as pcfg_expand () in
+// OpenCL/inc_pcfg.cl and has to stay the same walk: the device decides which candidate matched, and
+// this decides what that candidate was.
+//
+// Bytes are addressed directly here rather than through shifts, which is the same thing on a little
+// endian host and is what the kernel's word arithmetic amounts to.
+
+HC_PLUGIN_API int pcfg_expand (const pcfg_cell_t *cell, const u32 *pool, const u32 il_pos, u32 *w, const int base_len)
+{
+  if (pool == NULL) return -1;
+
+  const u32 slot_cnt = (cell->slot_cnt < PCFG_DEV_MAXSLOT) ? cell->slot_cnt : PCFG_DEV_MAXSLOT;
+
+  // Whether an entry is reached by multiplying or by looking its offset up, which is a property of the
+  // grammar and therefore of the cell. The kernel knows it at build time; this is compiled once and is
+  // told. See PCFG_DEV_VARLEN.
+
+  const bool varlen = ((cell->flags & PCFG_CELL_VARLEN) != 0);
+
+  // Nothing on the device and nothing to expand: the base word is the candidate, and its length is the
+  // one the caller handed over. A position past the end of a rectangle of one is still past the end.
+
+  if (slot_cnt == 0)
+  {
+    if (il_pos != 0) return -1;
+
+    return base_len;
+  }
+
+  u32 digit[PCFG_DEV_MAXSLOT];
+
+  u64 carry = il_pos;
+
+  for (int j = (int) slot_cnt - 1; j >= 0; j--)
+  {
+    const u32 radix = cell->slots[j].radix;
+
+    if (radix == 0) return false;
+
+    // A capitalisation slot's digit field carries the upper case image base rather than a starting
+    // digit, so it contributes nothing to the decomposition. An ordinary slot's is always zero today
+    // and is reserved for a rectangle wider than the inner loop.
+
+    // A capitalisation slot's digit field carries something other than a starting digit either way: the
+    // upper case image's base without per entry offsets and the distance to it with them.
+
+    const u64 start = ((PCFG_SLOT_KIND (cell->slots[j].packed) == PCFG_SLOT_KIND_CASE) || (varlen == true)) ? 0 : (u64) cell->slots[j].digit;
+
+    const u64 t = start + carry;
+
+    digit[j] = (u32) (t % radix);
+
+    carry = t / radix;
+  }
+
+  if (carry != 0) return -1;
+
+  const u8 *pb = (const u8 *) pool;
+
+  u8 *wb = (u8 *) w;
+
+  // Where each slot writes and how long the candidate ends up. Without per entry offsets both are
+  // constants of the cell and sit in the descriptor; with them the offset is a running sum over the
+  // digits, exactly as the kernel's odometer word carries it.
+
+  u32 dpos[PCFG_DEV_MAXSLOT];
+
+  u32 pos = PCFG_SLOT_DST_OFF (cell->slots[0].packed);
+
+  for (u32 j = 0; j < slot_cnt; j++)
+  {
+    const u32 packed = cell->slots[j].packed;
+
+    const u32 kind = PCFG_SLOT_KIND (packed);
+
+    const u32 ent_len = (varlen == true) ? (pool[cell->slots[j].pool_off + digit[j] + 1] - pool[cell->slots[j].pool_off + digit[j]]) : PCFG_SLOT_ENT_LEN (packed);
+    const u32 dst_off = (varlen == true) ? pos                                                                                      : PCFG_SLOT_DST_OFF (packed);
+
+    dpos[j] = dst_off;
+
+    if (kind == PCFG_SLOT_KIND_BYTES)
     {
-      const char *next_pos = strchr (input_buf + 8, '$');
+      const u32 src = (varlen == true) ? pool[cell->slots[j].pool_off + digit[j]] : cell->slots[j].pool_off + (digit[j] * ent_len);
 
-      if (next_pos == NULL) return -1;
-
-      const int rounds_len = next_pos - input_buf;
-
-      return rounds_len;
-    }
-  }
-
-  return -1;
-}
-
-const u8 *hc_strchr_next (const u8 *input_buf, const int input_len, const u8 separator)
-{
-  for (int i = 0; i < input_len; i++)
-  {
-    if (input_buf[i] == separator) return &input_buf[i];
-  }
-
-  return NULL;
-}
-
-const u8 *hc_strchr_last (const u8 *input_buf, const int input_len, const u8 separator)
-{
-  for (int i = input_len - 1; i >= 0; i--)
-  {
-    if (input_buf[i] == separator) return &input_buf[i];
-  }
-
-  return NULL;
-}
-
-int input_tokenizer (const u8 *input_buf, const int input_len, hc_token_t *token)
-{
-  int len_left = input_len;
-
-  token->buf[0] = input_buf;
-
-  int token_idx;
-
-  for (token_idx = 0; token_idx < token->token_cnt - 1; token_idx++)
-  {
-    if (token->attr[token_idx] & TOKEN_ATTR_FIXED_LENGTH)
-    {
-      int len = token->len[token_idx];
-
-      if (len_left < len) return (PARSER_TOKEN_LENGTH);
-    }
-    else
-    {
-      if (token->attr[token_idx] & TOKEN_ATTR_OPTIONAL_ROUNDS)
+      for (u32 k = 0; k < ent_len; k++)
       {
-        const int len = rounds_count_length ((const char *) token->buf[token_idx], len_left);
-
-        token->opt_buf = token->buf[token_idx];
-
-        token->opt_len = len; // we want an eventual -1 in here, it's used later for verification
-
-        if (len > 0)
-        {
-          token->buf[token_idx] += len + 1; // +1 = separator
-
-          len_left -= len + 1; // +1 = separator
-        }
+        wb[dst_off + k] = pb[src + k];
       }
+
+      pos += ent_len;
+
+      continue;
     }
 
-    if (token->sep[token_idx] != 0x00)
+    // The capitalisation walk, character by character, which is pcfg_case_slot () in inc_pcfg.cl and
+    // has to agree with it byte for byte. A mask writes over the token in front of it and adds nothing
+    // of its own, so it takes that token's offset and leaves the running one where it found it.
+
+    const u32 from = PCFG_SLOT_FROM (cell->slots[j].packed);
+
+    const u32 tok_len = (varlen == true) ? (pool[cell->slots[from].pool_off + digit[from] + 1] - pool[cell->slots[from].pool_off + digit[from]]) : PCFG_SLOT_ENT_LEN (cell->slots[from].packed);
+
+    const u32 mask_src = (varlen == true) ? pool[cell->slots[j].pool_off + digit[j]] : cell->slots[j].pool_off + (digit[j] * ent_len);
+    const u32 up_src   = (varlen == true) ? pool[cell->slots[from].pool_off + digit[from]] + cell->slots[j].digit : cell->slots[j].digit + (digit[from] * tok_len);
+
+    // Where the mask writes, which is where the token in front of it wrote. Without per entry offsets
+    // slot_geometry () already put that offset in the mask's own descriptor, so the two agree.
+
+    const u32 mdst_off = dpos[from];
+
+    u32 ci = 0;
+    u32 at = 0;
+
+    while ((at < tok_len) && (ci < ent_len))
     {
-      const u8 *next_pos = NULL;
+      if (pb[mask_src + ci] == 'U') wb[mdst_off + at] = pb[up_src + at];
 
-      if (token->attr[token_idx] & TOKEN_ATTR_SEPARATOR_FARTHEST)
+      at++;
+
+      while (at < tok_len)
       {
-        next_pos = hc_strchr_last (token->buf[token_idx], len_left, token->sep[token_idx]);
-      }
-      else
-      {
-        next_pos = hc_strchr_next (token->buf[token_idx], len_left, token->sep[token_idx]);
-      }
+        if ((wb[mdst_off + at] & 0xc0) != 0x80) break;
 
-      if (next_pos == NULL) return (PARSER_SEPARATOR_UNMATCHED);
+        if (pb[mask_src + ci] == 'U') wb[mdst_off + at] = pb[up_src + at];
 
-      const int len = next_pos - token->buf[token_idx];
-
-      if (token->attr[token_idx] & TOKEN_ATTR_FIXED_LENGTH)
-      {
-        if (len != token->len[token_idx]) return (PARSER_TOKEN_LENGTH);
+        at++;
       }
 
-      token->len[token_idx] = len;
-
-      token->buf[token_idx + 1] = next_pos + 1; // +1 = separator
-
-      len_left -= len + 1; // +1 = separator
-    }
-    else
-    {
-      const int len = token->len[token_idx];
-
-      token->buf[token_idx + 1] = token->buf[token_idx] + len;
-
-      len_left -= len;
-
-      if (token->sep[token_idx] != 0)
-      {
-        token->buf[token_idx + 1]++; // +1 = separator
-
-        len_left--; // -1 = separator
-      }
+      ci++;
     }
   }
 
-  if (token->attr[token_idx] & TOKEN_ATTR_FIXED_LENGTH)
-  {
-    int len = token->len[token_idx];
+  // How long the candidate is. The device slots are a suffix of the structure, so the last of them is
+  // where the candidate ends whether or not the lengths vary, and the running offset says where that
+  // is. A cell with no device slots rewrote nothing and its candidate is the base word, which only the
+  // caller knows the length of.
 
-    if (len_left != len) return (PARSER_TOKEN_LENGTH);
-  }
-  else
-  {
-    token->len[token_idx] = len_left;
-  }
+  const int len = (int) pos;
 
-  // verify data
-
-  for (token_idx = 0; token_idx < token->token_cnt; token_idx++)
-  {
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_SIGNATURE)
-    {
-      bool matched = false;
-
-      for (int signature_idx = 0; signature_idx < token->signatures_cnt; signature_idx++)
-      {
-        if (strncmp ((char *) token->buf[token_idx], token->signatures_buf[signature_idx], token->len[token_idx]) == 0) matched = true;
-      }
-
-      if (matched == false) return (PARSER_SIGNATURE_UNMATCHED);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_LENGTH)
-    {
-      if (token->len[token_idx] < token->len_min[token_idx]) return (PARSER_TOKEN_LENGTH);
-      if (token->len[token_idx] > token->len_max[token_idx]) return (PARSER_TOKEN_LENGTH);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_DIGIT)
-    {
-      if (is_valid_digit_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_FLOAT)
-    {
-      if (is_valid_float_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_HEX)
-    {
-      if (is_valid_hex_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_BASE64A)
-    {
-      if (is_valid_base64a_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_BASE64B)
-    {
-      if (is_valid_base64b_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_BASE64C)
-    {
-      if (is_valid_base64c_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_BASE58)
-    {
-      if (is_valid_base58_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-    if (token->attr[token_idx] & TOKEN_ATTR_VERIFY_BECH32)
-    {
-      if (is_valid_bech32_string (token->buf[token_idx], token->len[token_idx]) == false) return (PARSER_TOKEN_ENCODING);
-    }
-  }
-
-  return PARSER_OK;
+  return len;
 }
 
-bool generic_salt_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, const u8 *in_buf, const int in_len, u8 *out_buf, int *out_len)
+// Peak resident memory of this process, in bytes, or 0 where the platform will not say.
+//
+// The three platforms disagree about the unit as well as the call: ru_maxrss is kilobytes on Linux
+// and bytes on macOS, and Windows does not have getrusage at all.
+
+u64 hc_peak_rss (void)
 {
-  u32 tmp_u32[(64 * 2) + 1] = { 0 };
+  #if defined (_WIN)
 
-  u8 *tmp_u8 = (u8 *) tmp_u32;
+  PROCESS_MEMORY_COUNTERS pmc;
 
-  if (in_len > 512) return false; // 512 = 2 * 256 -- (2 * because of hex), 256 because of maximum salt length in salt_t
+  if (GetProcessMemoryInfo (GetCurrentProcess (), &pmc, sizeof (pmc)) == 0) return 0;
 
-  int tmp_len = 0;
+  return (u64) pmc.PeakWorkingSetSize;
 
-  if (hashconfig->opts_type & OPTS_TYPE_ST_HEX)
-  {
-    if (in_len < (int) (hashconfig->salt_min * 2)) return false;
-    if (in_len > (int) (hashconfig->salt_max * 2)) return false;
+  #else
 
-    if (in_len & 1) return false;
+  struct rusage ru;
 
-    for (int i = 0, j = 0; j < in_len; i += 1, j += 2)
-    {
-      u8 p0 = in_buf[j + 0];
-      u8 p1 = in_buf[j + 1];
+  if (getrusage (RUSAGE_SELF, &ru) != 0) return 0;
 
-      tmp_u8[i]  = hex_convert (p1) << 0;
-      tmp_u8[i] |= hex_convert (p0) << 4;
-    }
+  #if defined (__APPLE__)
+  return (u64) ru.ru_maxrss;
+  #else
+  return (u64) ru.ru_maxrss * 1024;
+  #endif
 
-    tmp_len = in_len / 2;
-  }
-  else if (hashconfig->opts_type & OPTS_TYPE_ST_BASE64)
-  {
-    if (in_len < (int) (((hashconfig->salt_min * 8) / 6) + 0)) return false;
-    if (in_len > (int) (((hashconfig->salt_max * 8) / 6) + 3)) return false;
-
-    tmp_len = base64_decode (base64_to_int, in_buf, in_len, tmp_u8);
-  }
-  else
-  {
-    if (in_len < (int) hashconfig->salt_min) return false;
-    if (in_len > (int) hashconfig->salt_max) return false;
-
-    memcpy (tmp_u8, in_buf, in_len);
-
-    tmp_len = in_len;
-  }
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_UTF16LE)
-  {
-    if (tmp_len >= 128) return false;
-
-    for (int i = 64 - 1; i >= 1; i -= 2)
-    {
-      const u32 v = tmp_u32[i / 2];
-
-      tmp_u32[i - 0] = ((v >> 8) & 0x00FF0000) | ((v >> 16) & 0x000000FF);
-      tmp_u32[i - 1] = ((v << 8) & 0x00FF0000) | ((v >>  0) & 0x000000FF);
-    }
-
-    tmp_len = tmp_len * 2;
-  }
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_LOWER)
-  {
-    lowercase (tmp_u8, tmp_len);
-  }
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_UPPER)
-  {
-    uppercase (tmp_u8, tmp_len);
-  }
-
-  int tmp2_len = tmp_len;
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_ADD80)
-  {
-    if (tmp2_len >= 256) return false;
-
-    tmp_u8[tmp2_len++] = 0x80;
-  }
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_ADD01)
-  {
-    if (tmp2_len >= 256) return false;
-
-    tmp_u8[tmp2_len++] = 0x01;
-  }
-
-  memcpy (out_buf, tmp_u8, tmp2_len);
-
-  *out_len = tmp_len;
-
-  return true;
-}
-
-int generic_salt_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, const u8 *in_buf, const int in_len, u8 *out_buf)
-{
-  u32 tmp_u32[(64 * 2) + 1] = { 0 };
-
-  u8 *tmp_u8 = (u8 *) tmp_u32;
-
-  memcpy (tmp_u8, in_buf, in_len);
-
-  int tmp_len = in_len;
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_UTF16LE)
-  {
-    for (int i = 0, j = 0; j < in_len; i += 1, j += 2)
-    {
-      const u8 p = tmp_u8[j];
-
-      tmp_u8[i] = p;
-    }
-
-    tmp_len = tmp_len / 2;
-  }
-
-  if (hashconfig->opts_type & OPTS_TYPE_ST_HEX)
-  {
-    for (int i = 0, j = 0; i < in_len; i += 1, j += 2)
-    {
-      u8_to_hex (in_buf[i], tmp_u8 + j);
-    }
-
-    tmp_len = in_len * 2;
-  }
-  else if (hashconfig->opts_type & OPTS_TYPE_ST_BASE64)
-  {
-    tmp_len = base64_encode (int_to_base64, in_buf, in_len, tmp_u8);
-  }
-
-  memcpy (out_buf, tmp_u8, tmp_len);
-
-  return tmp_len;
-}
-
-#if defined (__APPLE__)
-
-bool is_apple_silicon (void)
-{
-  size_t size;
-  cpu_type_t cpu_type = 0;
-  size = sizeof (cpu_type);
-  sysctlbyname ("hw.cputype", &cpu_type, &size, NULL, 0);
-
-  return (cpu_type == 0x100000c);
-}
-
-#endif // __APPLE__
-
-char *file_to_buffer (const char *filename)
-{
-  HCFILE fp;
-
-  if (hc_fopen (&fp, filename, "r") == true)
-  {
-    struct stat st;
-
-    memset (&st, 0, sizeof (st));
-
-    if (hc_fstat (&fp, &st))
-    {
-      hc_fclose (&fp);
-
-      return NULL;
-    }
-
-    char *buffer = malloc (st.st_size + 1);
-
-    const size_t nread = hc_fread (buffer, 1, st.st_size, &fp);
-
-    hc_fclose (&fp);
-
-    buffer[nread] = 0;
-
-    return buffer;
-  }
-
-  return NULL;
-}
-
-int extract_dynamicx_hash (const u8 *input_buf, const int input_len, u8 **output_buf, int *output_len)
-{
-  int hash_mode = -1;
-
-  if (sscanf ((char *) input_buf, "$dynamic_%d$", &hash_mode) != 1) return -1;
-
-  *output_buf = (u8 *) strchr ((char *) input_buf + 10, '$');
-
-  if (*output_buf == NULL) return -1;
-
-  *output_buf += 1; // the $ itself
-
-  *output_len = input_len - (*output_buf - input_buf);
-
-  return hash_mode;
+  #endif
 }

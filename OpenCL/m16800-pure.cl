@@ -21,6 +21,18 @@
 #include "inc_hash_sha1.h"
 #endif
 
+// The host compiles this file into the module that wants its helpers. There DECLSPEC says the
+// function is part of what the core offers a plugin, and these are not: they are the module's own
+// copy of a kernel and they stay inside it. inc_rp_common.cl says the same thing the same way.
+//
+// A module takes the helpers it wants and leaves the rest, so the ones it left have to be allowed to
+// go unused.
+
+#ifdef IS_NATIVE
+#undef DECLSPEC
+#define DECLSPEC static MAYBE_UNUSED
+#endif
+
 #define COMPARE_S M2S(INCLUDE_PATH/inc_comp_single.cl)
 #define COMPARE_M M2S(INCLUDE_PATH/inc_comp_multi.cl)
 
@@ -81,7 +93,7 @@ DECLSPEC void hmac_sha1_run_V (u32x *w0, u32x *w1, u32x *w2, u32x *w3, const u32
   sha1_transform_vector (w0, w1, w2, w3, digest);
 }
 
-KERNEL_FQ void m16800_init (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
+KERNEL_FQ KERNEL_FA void m16800_init (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
 {
   /**
    * base
@@ -189,7 +201,7 @@ KERNEL_FQ void m16800_init (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t)
   tmps[gid].out[9] = sha1_hmac_ctx2.opad.h[4];
 }
 
-KERNEL_FQ void m16800_loop (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
+KERNEL_FQ KERNEL_FA void m16800_loop (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -332,12 +344,12 @@ KERNEL_FQ void m16800_loop (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t)
   unpackv (tmps, out, gid, 9, out[4]);
 }
 
-KERNEL_FQ void m16800_comp (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
+KERNEL_FQ KERNEL_FA void m16800_comp (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
 {
   // not in use here, special case...
 }
 
-KERNEL_FQ void m16800_aux1 (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
+KERNEL_FQ KERNEL_FA void m16800_aux1 (KERN_ATTR_TMPS_ESALT (wpa_pbkdf2_tmp_t, wpa_pmkid_t))
 {
   const u64 gid = get_global_id (0);
 

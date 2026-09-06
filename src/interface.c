@@ -8,10 +8,15 @@
 #include "memory.h"
 #include "event.h"
 #include "shared.h"
+#include "path.h"
 #include "backend.h"
 #include "modules.h"
 #include "dynloader.h"
 #include "interface.h"
+
+// The name that says which plugin interface this core implements is defined in src/plugin_abi.c. It
+// is the first thing a plugin has to get past, and the checks below are what catch a plugin that
+// got past it.
 
 /**
  * parsing
@@ -53,11 +58,27 @@ bool module_load (hashcat_ctx_t *hashcat_ctx, module_ctx_t *module_ctx, const u3
 
   if (module_ctx->module_handle == NULL)
   {
-    #if defined (_WIN)
-    event_log_error (hashcat_ctx, "Cannot load module %s", module_file); // todo: maybe there's a dlerror () equivalent
-    #else
-    event_log_error (hashcat_ctx, "%s", dlerror ());
-    #endif
+    // a plugin built against an interface this core no longer carries is the usual reason, and the
+    // file says which one it was built against, so that is reported rather than the loader's own
+    // words. The Unix loader names the symbol it could not resolve. The Windows loader says only
+    // that a procedure was not found, which reads as a broken install.
+
+    const int plugin_abi = hc_dlplugin_abi (module_file);
+
+    if ((plugin_abi != -1) && (plugin_abi != HC_PLUGIN_ABI_VERSION))
+    {
+      event_log_error (hashcat_ctx, "Module %s was built for plugin interface %d, this hashcat provides %d", module_file, plugin_abi, HC_PLUGIN_ABI_VERSION);
+    }
+    else
+    {
+      #if defined (_WIN)
+      event_log_error (hashcat_ctx, "Cannot load module %s: %s", module_file, hc_dlerror ());
+      #else
+      event_log_error (hashcat_ctx, "%s", hc_dlerror ());
+      #endif
+    }
+
+    hcfree (module_file);
 
     return false;
   }
@@ -67,6 +88,8 @@ bool module_load (hashcat_ctx_t *hashcat_ctx, module_ctx_t *module_ctx, const u3
   if (module_ctx->module_init == NULL)
   {
     event_log_error (hashcat_ctx, "Cannot load symbol 'module_init' in module %s", module_file);
+
+    hcfree (module_file);
 
     return false;
   }
@@ -98,7 +121,6 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
 
   hashconfig->benchmark_mask          = default_benchmark_mask          (hashconfig, user_options, user_options_extra);
   hashconfig->benchmark_charset       = default_benchmark_charset       (hashconfig, user_options, user_options_extra);
-  hashconfig->dictstat_disable        = default_dictstat_disable        (hashconfig, user_options, user_options_extra);
   hashconfig->esalt_size              = default_esalt_size              (hashconfig, user_options, user_options_extra);
   hashconfig->forced_outfile_format   = default_forced_outfile_format   (hashconfig, user_options, user_options_extra);
   hashconfig->hash_mode               = default_hash_mode               (hashconfig, user_options, user_options_extra);
@@ -122,136 +144,147 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
 
   if (rc_load == false) return -1;
 
+  module_ctx->module_usage_notice = MODULE_DEFAULT; // set all module to have usage_notice by empty default; such that this property doesn't have to be declared explicitly by all modules (such that we don't break private plugins without this options)
+  module_ctx->module_advice_notice = MODULE_DEFAULT; // set all module to have advice_notice empty by default; such that this property doesn't have to be declared explicitly by all modules (such that we don't break private plugins without this options)
   module_ctx->module_init (module_ctx);
+
+  // The two optional fields are the only ones not covered by CHECK_DEFINED below, so a module that
+  // assigns NULL to one of them instead of leaving it alone gets past every guard: the readers test
+  // against MODULE_DEFAULT, not against NULL, and then call it. Seeding them before module_init ()
+  // only covers the module that says nothing. This covers the one that says NULL.
+
+  if (module_ctx->module_usage_notice  == NULL) module_ctx->module_usage_notice  = MODULE_DEFAULT;
+  if (module_ctx->module_advice_notice == NULL) module_ctx->module_advice_notice = MODULE_DEFAULT;
 
   if (module_ctx->module_context_size != MODULE_CONTEXT_SIZE_CURRENT)
   {
-    event_log_error (hashcat_ctx, "module context size is invalid. Old template?");
+    event_log_error (hashcat_ctx, "Module context size in 'module_init()' for hash-mode '%d' is invalid. Is this module based on an old template?", user_options->hash_mode);
 
     return -1;
   }
 
   if (module_ctx->module_interface_version < MODULE_INTERFACE_VERSION_MINIMUM)
   {
-    event_log_error (hashcat_ctx, "module interface version is outdated, please compile");
+    event_log_error (hashcat_ctx, "Interface version in module context in 'module_init()' for hash-mode '%d' is outdated. Please recompile.", user_options->hash_mode);
 
     return -1;
   }
 
   // check for missing pointer assignments
 
-  #define CHECK_DEFINED(func)                                                     \
-    if ((func) == NULL)                                                           \
+  #define CHECK_DEFINED(module_ctx, func)                                         \
+    if ((module_ctx)->func == NULL)                                               \
     {                                                                             \
-      event_log_error (hashcat_ctx, "Missing symbol definitions module for in hash-mode '%d'. Old template?", user_options->hash_mode); \
+      event_log_error (hashcat_ctx, "Module context missing field '%s' in 'module_init()' for hash-mode '%d'. Is this module based on an old template?", #func, user_options->hash_mode); \
                                                                                   \
       return -1;                                                                  \
     }
 
-  CHECK_DEFINED (module_ctx->module_attack_exec);
-  CHECK_DEFINED (module_ctx->module_benchmark_esalt);
-  CHECK_DEFINED (module_ctx->module_benchmark_hook_salt);
-  CHECK_DEFINED (module_ctx->module_benchmark_mask);
-  CHECK_DEFINED (module_ctx->module_benchmark_charset);
-  CHECK_DEFINED (module_ctx->module_benchmark_salt);
-  CHECK_DEFINED (module_ctx->module_bridge_name);
-  CHECK_DEFINED (module_ctx->module_bridge_type);
-  CHECK_DEFINED (module_ctx->module_build_plain_postprocess);
-  CHECK_DEFINED (module_ctx->module_deep_comp_kernel);
-  CHECK_DEFINED (module_ctx->module_deprecated_notice);
-  CHECK_DEFINED (module_ctx->module_dgst_pos0);
-  CHECK_DEFINED (module_ctx->module_dgst_pos1);
-  CHECK_DEFINED (module_ctx->module_dgst_pos2);
-  CHECK_DEFINED (module_ctx->module_dgst_pos3);
-  CHECK_DEFINED (module_ctx->module_dgst_size);
-  CHECK_DEFINED (module_ctx->module_dictstat_disable);
-  CHECK_DEFINED (module_ctx->module_esalt_size);
-  CHECK_DEFINED (module_ctx->module_extra_buffer_size);
-  CHECK_DEFINED (module_ctx->module_extra_tmp_size);
-  CHECK_DEFINED (module_ctx->module_extra_tuningdb_block);
-  CHECK_DEFINED (module_ctx->module_forced_outfile_format);
-  CHECK_DEFINED (module_ctx->module_hash_binary_count);
-  CHECK_DEFINED (module_ctx->module_hash_binary_parse);
-  CHECK_DEFINED (module_ctx->module_hash_binary_save);
-  CHECK_DEFINED (module_ctx->module_hash_category);
-  CHECK_DEFINED (module_ctx->module_hash_decode);
-  CHECK_DEFINED (module_ctx->module_hash_decode_postprocess);
-  CHECK_DEFINED (module_ctx->module_hash_decode_potfile);
-  CHECK_DEFINED (module_ctx->module_hash_decode_zero_hash);
-  CHECK_DEFINED (module_ctx->module_hash_encode);
-  CHECK_DEFINED (module_ctx->module_hash_encode_potfile);
-  CHECK_DEFINED (module_ctx->module_hash_encode_status);
-  CHECK_DEFINED (module_ctx->module_hash_init_selftest);
-  CHECK_DEFINED (module_ctx->module_hash_mode);
-  CHECK_DEFINED (module_ctx->module_hash_name);
-  CHECK_DEFINED (module_ctx->module_hashes_count_max);
-  CHECK_DEFINED (module_ctx->module_hashes_count_min);
-  CHECK_DEFINED (module_ctx->module_hlfmt_disable);
-  CHECK_DEFINED (module_ctx->module_hook_extra_param_size);
-  CHECK_DEFINED (module_ctx->module_hook_extra_param_init);
-  CHECK_DEFINED (module_ctx->module_hook_extra_param_term);
-  CHECK_DEFINED (module_ctx->module_hook12);
-  CHECK_DEFINED (module_ctx->module_hook23);
-  CHECK_DEFINED (module_ctx->module_hook_salt_size);
-  CHECK_DEFINED (module_ctx->module_hook_size);
-  CHECK_DEFINED (module_ctx->module_jit_build_options);
-  CHECK_DEFINED (module_ctx->module_jit_cache_disable);
-  CHECK_DEFINED (module_ctx->module_kern_type);
-  CHECK_DEFINED (module_ctx->module_kern_type_dynamic);
-  CHECK_DEFINED (module_ctx->module_kernel_accel_max);
-  CHECK_DEFINED (module_ctx->module_kernel_accel_min);
-  CHECK_DEFINED (module_ctx->module_kernel_loops_max);
-  CHECK_DEFINED (module_ctx->module_kernel_loops_min);
-  CHECK_DEFINED (module_ctx->module_kernel_threads_max);
-  CHECK_DEFINED (module_ctx->module_kernel_threads_min);
-  CHECK_DEFINED (module_ctx->module_opti_type);
-  CHECK_DEFINED (module_ctx->module_opts_type);
-  CHECK_DEFINED (module_ctx->module_outfile_check_disable);
-  CHECK_DEFINED (module_ctx->module_outfile_check_nocomp);
-  CHECK_DEFINED (module_ctx->module_potfile_custom_check);
-  CHECK_DEFINED (module_ctx->module_potfile_disable);
-  CHECK_DEFINED (module_ctx->module_potfile_keep_all_hashes);
-  CHECK_DEFINED (module_ctx->module_pw_max);
-  CHECK_DEFINED (module_ctx->module_pw_min);
-  CHECK_DEFINED (module_ctx->module_pwdump_column);
-  CHECK_DEFINED (module_ctx->module_salt_max);
-  CHECK_DEFINED (module_ctx->module_salt_min);
-  CHECK_DEFINED (module_ctx->module_salt_type);
-  CHECK_DEFINED (module_ctx->module_separator);
-  CHECK_DEFINED (module_ctx->module_st_hash);
-  CHECK_DEFINED (module_ctx->module_st_pass);
-  CHECK_DEFINED (module_ctx->module_tmp_size);
-  CHECK_DEFINED (module_ctx->module_unstable_warning);
-  CHECK_DEFINED (module_ctx->module_warmup_disable);
+  CHECK_DEFINED (module_ctx, module_attack_exec);
+  CHECK_DEFINED (module_ctx, module_benchmark_esalt);
+  CHECK_DEFINED (module_ctx, module_benchmark_hook_salt);
+  CHECK_DEFINED (module_ctx, module_benchmark_mask);
+  CHECK_DEFINED (module_ctx, module_benchmark_charset);
+  CHECK_DEFINED (module_ctx, module_benchmark_salt);
+  CHECK_DEFINED (module_ctx, module_bridge_name);
+  CHECK_DEFINED (module_ctx, module_bridge_type);
+  CHECK_DEFINED (module_ctx, module_build_plain_postprocess);
+  CHECK_DEFINED (module_ctx, module_deep_comp_kernel);
+  CHECK_DEFINED (module_ctx, module_deprecated_notice);
+  // CHECK_DEFINED (module_ctx, module_usage_notice); // we don't check this here as it's an optional field
+  // CHECK_DEFINED (module_ctx, module_advice_notice); // we don't check this here as it's an optional field
+  CHECK_DEFINED (module_ctx, module_dgst_pos0);
+  CHECK_DEFINED (module_ctx, module_dgst_pos1);
+  CHECK_DEFINED (module_ctx, module_dgst_pos2);
+  CHECK_DEFINED (module_ctx, module_dgst_pos3);
+  CHECK_DEFINED (module_ctx, module_dgst_size);
+  CHECK_DEFINED (module_ctx, module_esalt_size);
+  CHECK_DEFINED (module_ctx, module_extra_buffer_size);
+  CHECK_DEFINED (module_ctx, module_extra_tmp_size);
+  CHECK_DEFINED (module_ctx, module_extra_tuningdb_block);
+  CHECK_DEFINED (module_ctx, module_forced_outfile_format);
+  CHECK_DEFINED (module_ctx, module_hash_binary_count);
+  CHECK_DEFINED (module_ctx, module_hash_binary_parse);
+  CHECK_DEFINED (module_ctx, module_hash_binary_save);
+  CHECK_DEFINED (module_ctx, module_hash_category);
+  CHECK_DEFINED (module_ctx, module_hash_decode);
+  CHECK_DEFINED (module_ctx, module_hash_decode_postprocess);
+  CHECK_DEFINED (module_ctx, module_hash_decode_potfile);
+  CHECK_DEFINED (module_ctx, module_hash_decode_zero_hash);
+  CHECK_DEFINED (module_ctx, module_hash_encode);
+  CHECK_DEFINED (module_ctx, module_hash_encode_potfile);
+  CHECK_DEFINED (module_ctx, module_hash_encode_status);
+  CHECK_DEFINED (module_ctx, module_hash_init_selftest);
+  CHECK_DEFINED (module_ctx, module_hash_mode);
+  CHECK_DEFINED (module_ctx, module_hash_name);
+  CHECK_DEFINED (module_ctx, module_hashes_count_max);
+  CHECK_DEFINED (module_ctx, module_hashes_count_min);
+  CHECK_DEFINED (module_ctx, module_hlfmt_disable);
+  CHECK_DEFINED (module_ctx, module_hook_extra_param_size);
+  CHECK_DEFINED (module_ctx, module_hook_extra_param_init);
+  CHECK_DEFINED (module_ctx, module_hook_extra_param_term);
+  CHECK_DEFINED (module_ctx, module_hook12);
+  CHECK_DEFINED (module_ctx, module_hook23);
+  CHECK_DEFINED (module_ctx, module_hook_salt_size);
+  CHECK_DEFINED (module_ctx, module_hook_size);
+  CHECK_DEFINED (module_ctx, module_jit_build_options);
+  CHECK_DEFINED (module_ctx, module_jit_cache_disable);
+  CHECK_DEFINED (module_ctx, module_kern_type);
+  CHECK_DEFINED (module_ctx, module_kern_type_dynamic);
+  CHECK_DEFINED (module_ctx, module_kernel_accel_max);
+  CHECK_DEFINED (module_ctx, module_kernel_accel_min);
+  CHECK_DEFINED (module_ctx, module_kernel_loops_max);
+  CHECK_DEFINED (module_ctx, module_kernel_loops_min);
+  CHECK_DEFINED (module_ctx, module_kernel_threads_max);
+  CHECK_DEFINED (module_ctx, module_kernel_threads_min);
+  CHECK_DEFINED (module_ctx, module_opti_type);
+  CHECK_DEFINED (module_ctx, module_opts_type);
+  CHECK_DEFINED (module_ctx, module_outfile_check_disable);
+  CHECK_DEFINED (module_ctx, module_outfile_check_nocomp);
+  CHECK_DEFINED (module_ctx, module_potfile_custom_check);
+  CHECK_DEFINED (module_ctx, module_potfile_disable);
+  CHECK_DEFINED (module_ctx, module_potfile_keep_all_hashes);
+  CHECK_DEFINED (module_ctx, module_pw_max);
+  CHECK_DEFINED (module_ctx, module_pw_min);
+  CHECK_DEFINED (module_ctx, module_pwdump_column);
+  CHECK_DEFINED (module_ctx, module_salt_max);
+  CHECK_DEFINED (module_ctx, module_salt_min);
+  CHECK_DEFINED (module_ctx, module_salt_type);
+  CHECK_DEFINED (module_ctx, module_separator);
+  CHECK_DEFINED (module_ctx, module_st_hash);
+  CHECK_DEFINED (module_ctx, module_st_pass);
+  CHECK_DEFINED (module_ctx, module_tmp_size);
+  CHECK_DEFINED (module_ctx, module_unstable_warning);
+  CHECK_DEFINED (module_ctx, module_warmup_disable);
 
   #undef CHECK_DEFINED
 
   // mandatory functions check
 
-  #define CHECK_MANDATORY(func)                                               \
-    if ((func) == MODULE_DEFAULT)                                             \
+  #define CHECK_MANDATORY(module_ctx, func)                                   \
+    if ((module_ctx)->func == MODULE_DEFAULT)                                 \
     {                                                                         \
-      event_log_error (hashcat_ctx, "Missing mandatory symbol definitions");  \
+      event_log_error (hashcat_ctx, "Module context field '%s' in 'module_init()' for hash-mode '%d' is set to MODULE_DEFAULT, but must be explicitly set.", #func, user_options->hash_mode); \
                                                                               \
       return -1;                                                              \
     }
 
-  CHECK_MANDATORY (module_ctx->module_attack_exec);
-  CHECK_MANDATORY (module_ctx->module_dgst_pos0);
-  CHECK_MANDATORY (module_ctx->module_dgst_pos1);
-  CHECK_MANDATORY (module_ctx->module_dgst_pos2);
-  CHECK_MANDATORY (module_ctx->module_dgst_pos3);
-  CHECK_MANDATORY (module_ctx->module_dgst_size);
-  CHECK_MANDATORY (module_ctx->module_hash_decode);
-  // CHECK_MANDATORY (module_ctx->module_hash_encode); we do that one later
-  CHECK_MANDATORY (module_ctx->module_hash_category);
-  CHECK_MANDATORY (module_ctx->module_hash_name);
-  CHECK_MANDATORY (module_ctx->module_kern_type);
-  CHECK_MANDATORY (module_ctx->module_opti_type);
-  CHECK_MANDATORY (module_ctx->module_opts_type);
-  CHECK_MANDATORY (module_ctx->module_salt_type);
-  CHECK_MANDATORY (module_ctx->module_st_hash);
-  CHECK_MANDATORY (module_ctx->module_st_pass);
+  CHECK_MANDATORY (module_ctx, module_attack_exec);
+  CHECK_MANDATORY (module_ctx, module_dgst_pos0);
+  CHECK_MANDATORY (module_ctx, module_dgst_pos1);
+  CHECK_MANDATORY (module_ctx, module_dgst_pos2);
+  CHECK_MANDATORY (module_ctx, module_dgst_pos3);
+  CHECK_MANDATORY (module_ctx, module_dgst_size);
+  CHECK_MANDATORY (module_ctx, module_hash_decode);
+  // CHECK_MANDATORY (module_ctx, module_hash_encode); we do that one later
+  CHECK_MANDATORY (module_ctx, module_hash_category);
+  CHECK_MANDATORY (module_ctx, module_hash_name);
+  CHECK_MANDATORY (module_ctx, module_kern_type);
+  CHECK_MANDATORY (module_ctx, module_opti_type);
+  CHECK_MANDATORY (module_ctx, module_opts_type);
+  CHECK_MANDATORY (module_ctx, module_salt_type);
+  CHECK_MANDATORY (module_ctx, module_st_hash);
+  CHECK_MANDATORY (module_ctx, module_st_pass);
 
   hashconfig->attack_exec   = module_ctx->module_attack_exec    (hashconfig, user_options, user_options_extra);
   hashconfig->dgst_pos0     = module_ctx->module_dgst_pos0      (hashconfig, user_options, user_options_extra);
@@ -270,7 +303,13 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
 
   if ((hashconfig->opts_type & OPTS_TYPE_BINARY_HASHFILE) == 0)
   {
-    CHECK_MANDATORY (module_ctx->module_hash_encode);
+    CHECK_MANDATORY (module_ctx, module_hash_encode);
+  }
+
+  // check deep comp kernel requirements
+  if (hashconfig->opts_type & OPTS_TYPE_DEEP_COMP_KERNEL)
+  {
+    CHECK_MANDATORY (module_ctx, module_deep_comp_kernel);
   }
 
   #undef CHECK_MANDATORY
@@ -336,6 +375,11 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
     }
   }
 
+  if (hashconfig->attack_exec == ATTACK_EXEC_OUTSIDE_KERNEL)
+  {
+    hashconfig->opts_type |= OPTS_TYPE_INIT |  OPTS_TYPE_LOOP | OPTS_TYPE_COMP;
+  }
+
   hashconfig->has_optimized_kernel  = false;
   hashconfig->has_pure_kernel       = false;
 
@@ -358,7 +402,7 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
 
     hashconfig->has_optimized_kernel = hc_path_read (source_file);
 
-    if (user_options->hash_info == false)
+    if (user_options->hash_info == 0 || user_options->hash_info > 1)
     {
       if (user_options->optimized_kernel == true)
       {
@@ -425,7 +469,6 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
 
   if (module_ctx->module_benchmark_mask           != MODULE_DEFAULT) hashconfig->benchmark_mask          = module_ctx->module_benchmark_mask           (hashconfig, user_options, user_options_extra);
   if (module_ctx->module_benchmark_charset        != MODULE_DEFAULT) hashconfig->benchmark_charset       = module_ctx->module_benchmark_charset        (hashconfig, user_options, user_options_extra);
-  if (module_ctx->module_dictstat_disable         != MODULE_DEFAULT) hashconfig->dictstat_disable        = module_ctx->module_dictstat_disable         (hashconfig, user_options, user_options_extra);
   if (module_ctx->module_esalt_size               != MODULE_DEFAULT) hashconfig->esalt_size              = module_ctx->module_esalt_size               (hashconfig, user_options, user_options_extra);
   if (module_ctx->module_forced_outfile_format    != MODULE_DEFAULT) hashconfig->forced_outfile_format   = module_ctx->module_forced_outfile_format    (hashconfig, user_options, user_options_extra);
   if (module_ctx->module_hash_mode                != MODULE_DEFAULT) hashconfig->hash_mode               = module_ctx->module_hash_mode                (hashconfig, user_options, user_options_extra);
@@ -494,19 +537,33 @@ int hashconfig_init (hashcat_ctx_t *hashcat_ctx)
 
     for (int i = 0; i < hook_threads; i++)
     {
-      const bool rc_hook_extra_param_init = module_ctx->module_hook_extra_param_init (hashconfig, user_options, user_options_extra, folder_config, backend_ctx, module_ctx->hook_extra_params[i]);
+      const bool rc_hook_extra_param_init = module_ctx->module_hook_extra_param_init (hashcat_ctx, hashconfig, user_options, user_options_extra, folder_config, backend_ctx, module_ctx->hook_extra_params[i]);
 
       if (rc_hook_extra_param_init == false) return -1;
     }
   }
 
-  // selftest bridge update
+  // bridges have some serious impact on hashconfig
+  if (hashconfig->bridge_type & BRIDGE_TYPE_REPLACE_LOOP)
+  {
+    hashconfig->opts_type &= ~OPTS_TYPE_LOOP;
 
+    hashconfig->bridge_type |= BRIDGE_TYPE_LAUNCH_LOOP;
+  }
+
+  if (hashconfig->bridge_type & BRIDGE_TYPE_REPLACE_LOOP2)
+  {
+    hashconfig->opts_type &= ~OPTS_TYPE_LOOP2;
+
+    hashconfig->bridge_type |= BRIDGE_TYPE_LAUNCH_LOOP2;
+  }
+
+  // selftest bridge update
   if (hashconfig->bridge_type & BRIDGE_TYPE_UPDATE_SELFTEST)
   {
-    if (bridge_ctx->st_update_hash) hashconfig->st_hash = bridge_ctx->st_update_hash (bridge_ctx->platform_context);
-    if (bridge_ctx->st_update_pass) hashconfig->st_pass = bridge_ctx->st_update_pass (bridge_ctx->platform_context);
-  }  
+    if (bridge_ctx->st_update_hash) hashconfig->st_hash = bridge_ctx->st_update_hash (hashcat_ctx, bridge_ctx->platform_context);
+    if (bridge_ctx->st_update_pass) hashconfig->st_pass = bridge_ctx->st_update_pass (hashcat_ctx, bridge_ctx->platform_context);
+  }
 
   return 0;
 }
@@ -521,13 +578,32 @@ void hashconfig_destroy (hashcat_ctx_t *hashcat_ctx)
   hashconfig_t *hashconfig = hashcat_ctx->hashconfig;
   module_ctx_t *module_ctx = hashcat_ctx->module_ctx;
 
+  // A module that never got as far as module_init () has every function pointer still at NULL, because
+  // module_load () memsets the context and then returns early when the file cannot be opened or has no
+  // module_init symbol. MODULE_DEFAULT is (void *) -1 rather than NULL, so each "was this one set" test
+  // below is true for a module that was never loaded, and the first of them calls through a null
+  // pointer.
+  //
+  // Autodetect is where this bites. It walks every hash-mode in turn and destroys the context after
+  // each one whether the load succeeded or not, so a single plugin that will not load takes the whole
+  // sweep down with it rather than being skipped.
+
+  if (module_ctx->module_init == NULL)
+  {
+    module_unload (module_ctx);
+
+    memset (hashconfig, 0, sizeof (hashconfig_t));
+
+    return;
+  }
+
   if (module_ctx->module_hook_extra_param_term != MODULE_DEFAULT)
   {
     const int hook_threads = (int) user_options->hook_threads;
 
     for (int i = 0; i < hook_threads; i++)
     {
-      module_ctx->module_hook_extra_param_term (hashconfig, user_options, user_options_extra, folder_config, backend_ctx, module_ctx->hook_extra_params[i]);
+      module_ctx->module_hook_extra_param_term (hashcat_ctx, hashconfig, user_options, user_options_extra, folder_config, backend_ctx, module_ctx->hook_extra_params[i]);
     }
   }
 
@@ -561,7 +637,7 @@ void hashconfig_destroy (hashcat_ctx_t *hashcat_ctx)
 
 const char *default_benchmark_mask (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
 {
-  const char *mask = "?b?b?b?b?b?b?b";
+  const char *mask = "?a?a?a?a?a?a?a";
 
   return mask;
 }
@@ -658,13 +734,6 @@ u64 default_hook_size (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED
 char default_separator (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
 {
   return user_options_extra->separator;
-}
-
-bool default_dictstat_disable (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)
-{
-  const bool dictstat_disable = false;
-
-  return dictstat_disable;
 }
 
 bool default_warmup_disable (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSED const user_options_t *user_options, MAYBE_UNUSED const user_options_extra_t *user_options_extra)

@@ -40,7 +40,7 @@ DECLSPEC u32 hex_u32_to_u32 (PRIVATE_AS const u32 hex0, PRIVATE_AS const u32 hex
   return (v);
 }
 
-KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m30902_mxx (KERN_ATTR_BASIC ())
 {
   /**
    * modifier
@@ -49,7 +49,6 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
   const u64 gid = get_global_id (0);
 
   if (gid >= GID_CNT) return;
-
 
   /**
    * base
@@ -61,7 +60,6 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
 
   u32 w[16] = { 0 };
 
-  // for (u32 i = 0, idx = 0; i < pw_len; i += 4, idx += 1)
   for (u32 idx = 0; idx < 16; idx++)
   {
     w[idx] = pws[gid].i[idx];
@@ -71,42 +69,36 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
 
   set_precomputed_basepoint_g (&preG);
 
-
   /**
    * loop
    */
 
   for (u32 il_pos = 0; il_pos < IL_CNT; il_pos++)
   {
-    const u32 comb_len = combs_buf[il_pos].pw_len;
+    const u32 comb_len = combs_len_S (combs_buf, il_pos, COMBS_MODE);
 
     if ((pw_len + comb_len) != 64) continue;
 
     u32 c[64] = { 0 };
 
-    #ifdef _unroll
-    #pragma unroll
-    #endif
-    for (u32 i = 0; i < 16; i++)
-    {
-      c[i] = combs_buf[il_pos].i[i];
-    }
+    // -a 12 puts the base word inside the amplifier instead of beside it, so the candidate is five
+    // pieces: mask, base word, mask, second word, mask. The assembler takes all five in order and
+    // does the plain two piece case the other attack modes need as well.
 
-    switch_buffer_by_offset_1x64_le_S (c, pw_len);
+    combs_assemble_1x64_le_S (combs_buf, il_pos, COMBS_MODE, w, pw_len, c);
 
-    #ifdef _unroll
-    #pragma unroll
-    #endif
-    for (u32 i = 0; i < 16; i++)
-    {
-      c[i] |= w[i];
-    }
+    u32 e = 0;
 
     for (u32 i = 0; i < 16; i++)
     {
-      if (is_valid_hex_32 (c[i]) == 0) continue;
+      if (is_valid_hex_32 (c[i]) != 0) continue;
+
+      e = 1;
+
+      break;
     }
 
+    if (e == 1) continue; // not a valid hex
 
     // convert password from hex to binary
 
@@ -117,7 +109,7 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
       tmp[i] = hex_u32_to_u32 (c[j + 0], c[j + 1]);
     }
 
-    u32 prv_key[9];
+    u32 prv_key[9] = { 0 };
 
     prv_key[0] = tmp[7];
     prv_key[1] = tmp[6];
@@ -128,14 +120,12 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
     prv_key[6] = tmp[1];
     prv_key[7] = tmp[0];
 
-
     // convert: pub_key = G * prv_key
 
-    u32 x[8];
-    u32 y[8];
+    u32 x[8] = { 0 };
+    u32 y[8] = { 0 };
 
     point_mul_xy (x, y, prv_key, &preG);
-
 
     // to public key:
 
@@ -159,7 +149,6 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
     pub_key[ 1] = (x[6] >> 8) | (x[7] << 24);
     pub_key[ 0] = (x[7] >> 8) | (0x04000000);
 
-
     // calculate HASH160 for pub key
 
     sha256_ctx_t ctx;
@@ -174,7 +163,6 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
     // tmp[12] = 0; tmp[13] = 0; tmp[14] = 0; tmp[15] = 0;
 
     for (u32 i = 8; i < 16; i++) tmp[i] = 0;
-
 
     // now let's do RIPEMD-160 on the sha256sum
 
@@ -193,7 +181,7 @@ KERNEL_FQ void m30902_mxx (KERN_ATTR_BASIC ())
   }
 }
 
-KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m30902_sxx (KERN_ATTR_BASIC ())
 {
   /**
    * modifier
@@ -202,7 +190,6 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
   const u64 gid = get_global_id (0);
 
   if (gid >= GID_CNT) return;
-
 
   /**
    * digest
@@ -216,7 +203,6 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
     digests_buf[DIGESTS_OFFSET_HOST].digest_buf[DGST_R3]
   };
 
-
   /**
    * base
    */
@@ -227,7 +213,6 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
 
   u32 w[16] = { 0 };
 
-  // for (u32 i = 0, idx = 0; i < pw_len; i += 4, idx += 1)
   for (u32 idx = 0; idx < 16; idx++)
   {
     w[idx] = pws[gid].i[idx];
@@ -237,42 +222,36 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
 
   set_precomputed_basepoint_g (&preG);
 
-
   /**
    * loop
    */
 
   for (u32 il_pos = 0; il_pos < IL_CNT; il_pos++)
   {
-    const u32 comb_len = combs_buf[il_pos].pw_len;
+    const u32 comb_len = combs_len_S (combs_buf, il_pos, COMBS_MODE);
 
     if ((pw_len + comb_len) != 64) continue;
 
     u32 c[64] = { 0 };
 
-    #ifdef _unroll
-    #pragma unroll
-    #endif
-    for (u32 i = 0; i < 16; i++)
-    {
-      c[i] = combs_buf[il_pos].i[i];
-    }
+    // -a 12 puts the base word inside the amplifier instead of beside it, so the candidate is five
+    // pieces: mask, base word, mask, second word, mask. The assembler takes all five in order and
+    // does the plain two piece case the other attack modes need as well.
 
-    switch_buffer_by_offset_1x64_le_S (c, pw_len);
+    combs_assemble_1x64_le_S (combs_buf, il_pos, COMBS_MODE, w, pw_len, c);
 
-    #ifdef _unroll
-    #pragma unroll
-    #endif
-    for (u32 i = 0; i < 16; i++)
-    {
-      c[i] |= w[i];
-    }
+    u32 e = 0;
 
     for (u32 i = 0; i < 16; i++)
     {
-      if (is_valid_hex_32 (c[i]) == 0) continue;
+      if (is_valid_hex_32 (c[i]) != 0) continue;
+
+      e = 1;
+
+      break;
     }
 
+    if (e == 1) continue; // not a valid hex
 
     // convert password from hex to binary
 
@@ -283,7 +262,7 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
       tmp[i] = hex_u32_to_u32 (c[j + 0], c[j + 1]);
     }
 
-    u32 prv_key[9];
+    u32 prv_key[9] = { 0 };
 
     prv_key[0] = tmp[7];
     prv_key[1] = tmp[6];
@@ -294,14 +273,12 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
     prv_key[6] = tmp[1];
     prv_key[7] = tmp[0];
 
-
     // convert: pub_key = G * prv_key
 
-    u32 x[8];
-    u32 y[8];
+    u32 x[8] = { 0 };
+    u32 y[8] = { 0 };
 
     point_mul_xy (x, y, prv_key, &preG);
-
 
     // to public key:
 
@@ -325,7 +302,6 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
     pub_key[ 1] = (x[6] >> 8) | (x[7] << 24);
     pub_key[ 0] = (x[7] >> 8) | (0x04000000);
 
-
     // calculate HASH160 for pub key
 
     sha256_ctx_t ctx;
@@ -340,7 +316,6 @@ KERNEL_FQ void m30902_sxx (KERN_ATTR_BASIC ())
     // tmp[12] = 0; tmp[13] = 0; tmp[14] = 0; tmp[15] = 0;
 
     for (u32 i = 8; i < 16; i++) tmp[i] = 0;
-
 
     // now let's do RIPEMD-160 on the sha256sum
 

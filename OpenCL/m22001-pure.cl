@@ -27,6 +27,18 @@
 #include "inc_cipher_aes.h"
 #endif
 
+// The host compiles this file into the module that wants its helpers. There DECLSPEC says the
+// function is part of what the core offers a plugin, and these are not: they are the module's own
+// copy of a kernel and they stay inside it. inc_rp_common.cl says the same thing the same way.
+//
+// A module takes the helpers it wants and leaves the rest, so the ones it left have to be allowed to
+// go unused.
+
+#ifdef IS_NATIVE
+#undef DECLSPEC
+#define DECLSPEC static MAYBE_UNUSED
+#endif
+
 #define COMPARE_S M2S(INCLUDE_PATH/inc_comp_single.cl)
 #define COMPARE_M M2S(INCLUDE_PATH/inc_comp_multi.cl)
 
@@ -158,7 +170,7 @@ DECLSPEC void hmac_sha1_run_V (PRIVATE_AS u32x *w0, PRIVATE_AS u32x *w1, PRIVATE
   sha1_transform_vector (w0, w1, w2, w3, digest);
 }
 
-KERNEL_FQ void m22001_init (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_init (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -203,17 +215,17 @@ KERNEL_FQ void m22001_init (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
   tmps[gid].out[7] = hc_swap32_S (out[7]);
 }
 
-KERNEL_FQ void m22001_loop (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_loop (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   // not in use here, special case...
 }
 
-KERNEL_FQ void m22001_comp (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_comp (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   // not in use here, special case...
 }
 
-KERNEL_FQ void m22001_aux1 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_aux1 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -406,7 +418,7 @@ KERNEL_FQ void m22001_aux1 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
   }
 }
 
-KERNEL_FQ void m22001_aux2 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_aux2 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -589,7 +601,7 @@ KERNEL_FQ void m22001_aux2 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
   }
 }
 
-KERNEL_FQ void m22001_aux3 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_aux3 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   /**
    * aes shared
@@ -883,7 +895,7 @@ KERNEL_FQ void m22001_aux3 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
   }
 }
 
-KERNEL_FQ void m22001_aux4 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
+KERNEL_FQ KERNEL_FA void m22001_aux4 (KERN_ATTR_TMPS_ESALT (wpa_pmk_tmp_t, wpa_t))
 {
   const u64 gid = get_global_id (0);
 

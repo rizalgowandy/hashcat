@@ -14,7 +14,7 @@
 #include M2S(INCLUDE_PATH/inc_hash_md5.cl)
 #endif
 
-KERNEL_FQ void m09900_mxx (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m09900_mxx (KERN_ATTR_BASIC ())
 {
   /**
    * modifier
@@ -28,6 +28,13 @@ KERNEL_FQ void m09900_mxx (KERN_ATTR_BASIC ())
   /**
    * base
    */
+
+  // the base word as words rather than as a stream, because -a 12 has to assemble the candidate
+  // around it instead of appending to a context that already holds it
+
+  u32 w[64];
+
+  for (u32 i = 0; i < 64; i++) w[i] = pws[gid].i[i];
 
   md5_ctx_t ctx0;
 
@@ -43,7 +50,23 @@ KERNEL_FQ void m09900_mxx (KERN_ATTR_BASIC ())
   {
     md5_ctx_t ctx = ctx0;
 
-    md5_update_global (&ctx, combs_buf[il_pos].i, 100 - pws[gid].pw_len);
+    if (COMBS_IS_MIDDLE)
+    {
+      // -a 12 puts the base word inside the amplifier, so the fixed 100 bytes are the assembled
+      // candidate and the zeros behind it rather than the base word and one buffer.
+
+      u32 c[64];
+
+      combs_assemble_1x64_le_S (combs_buf, il_pos, COMBS_MODE, w, pws[gid].pw_len, c);
+
+      md5_init (&ctx);
+
+      md5_update (&ctx, c, 100);
+    }
+    else
+    {
+      md5_update_global (&ctx, combs_buf[il_pos].i, 100 - pws[gid].pw_len);
+    }
 
     md5_final (&ctx);
 
@@ -56,7 +79,7 @@ KERNEL_FQ void m09900_mxx (KERN_ATTR_BASIC ())
   }
 }
 
-KERNEL_FQ void m09900_sxx (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m09900_sxx (KERN_ATTR_BASIC ())
 {
   /**
    * modifier
@@ -83,6 +106,13 @@ KERNEL_FQ void m09900_sxx (KERN_ATTR_BASIC ())
    * base
    */
 
+  // the base word as words rather than as a stream, because -a 12 has to assemble the candidate
+  // around it instead of appending to a context that already holds it
+
+  u32 w[64];
+
+  for (u32 i = 0; i < 64; i++) w[i] = pws[gid].i[i];
+
   md5_ctx_t ctx0;
 
   md5_init (&ctx0);
@@ -97,7 +127,23 @@ KERNEL_FQ void m09900_sxx (KERN_ATTR_BASIC ())
   {
     md5_ctx_t ctx = ctx0;
 
-    md5_update_global (&ctx, combs_buf[il_pos].i, 100 - pws[gid].pw_len);
+    if (COMBS_IS_MIDDLE)
+    {
+      // -a 12 puts the base word inside the amplifier, so the fixed 100 bytes are the assembled
+      // candidate and the zeros behind it rather than the base word and one buffer.
+
+      u32 c[64];
+
+      combs_assemble_1x64_le_S (combs_buf, il_pos, COMBS_MODE, w, pws[gid].pw_len, c);
+
+      md5_init (&ctx);
+
+      md5_update (&ctx, c, 100);
+    }
+    else
+    {
+      md5_update_global (&ctx, combs_buf[il_pos].i, 100 - pws[gid].pw_len);
+    }
 
     md5_final (&ctx);
 

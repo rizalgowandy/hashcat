@@ -18,16 +18,12 @@
 
 DECLSPEC u64 siphash_rot32_S (const u64 a)
 {
-  vconv64_t in;
+  // swapping the two halves of a 64 bit word is a rotation by 32. Writing it as a union makes
+  // Mesa put the value in scratch memory.
 
-  in.v64 = a;
+  const u64 r = hc_rotr64_S (a, 32);
 
-  vconv64_t out;
-
-  out.v32.a = in.v32.b;
-  out.v32.b = in.v32.a;
-
-  return out.v64;
+  return r;
 }
 
 DECLSPEC u64x siphash_rot32 (const u64x a)
@@ -85,7 +81,7 @@ DECLSPEC u64x siphash_rot32 (const u64x a)
   (v1) ^= (v2);                 \
   (v2)  = siphash_rot32 ((v2))
 
-KERNEL_FQ void m10100_m04 (KERN_ATTR_RULES ())
+KERNEL_FQ KERNEL_FA void m10100_m04 (KERN_ATTR_RULES ())
 {
   /**
    * modifier
@@ -204,15 +200,15 @@ KERNEL_FQ void m10100_m04 (KERN_ATTR_RULES ())
   }
 }
 
-KERNEL_FQ void m10100_m08 (KERN_ATTR_RULES ())
+KERNEL_FQ KERNEL_FA void m10100_m08 (KERN_ATTR_RULES ())
 {
 }
 
-KERNEL_FQ void m10100_m16 (KERN_ATTR_RULES ())
+KERNEL_FQ KERNEL_FA void m10100_m16 (KERN_ATTR_RULES ())
 {
 }
 
-KERNEL_FQ void m10100_s04 (KERN_ATTR_RULES ())
+KERNEL_FQ KERNEL_FA void m10100_s04 (KERN_ATTR_RULES ())
 {
   /**
    * modifier
@@ -343,10 +339,10 @@ KERNEL_FQ void m10100_s04 (KERN_ATTR_RULES ())
   }
 }
 
-KERNEL_FQ void m10100_s08 (KERN_ATTR_RULES ())
+KERNEL_FQ KERNEL_FA void m10100_s08 (KERN_ATTR_RULES ())
 {
 }
 
-KERNEL_FQ void m10100_s16 (KERN_ATTR_RULES ())
+KERNEL_FQ KERNEL_FA void m10100_s16 (KERN_ATTR_RULES ())
 {
 }

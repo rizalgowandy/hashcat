@@ -1,4 +1,4 @@
-#
+
 # Find the right -n value for your GPU:
 # =====================================
 #
@@ -17,16 +17,4 @@
 # 4. To match the speed you have chosen to the correct value in the 'x' file, simply search for it in it. Then go up a little on the block where you found him. The value -n is the single value that begins before the block start. If you have multiple blocks at the same speed, choose the lowest value for -n
 
 #Device                                         Attack  Hash    Vector  Kernel  Kernel
-#Name                                           Mode    Type    Width   Accel   Loops
-
-DEVICE_TYPE_CPU                                 *       29800   1       N       A
-DEVICE_TYPE_GPU                                 *       29800   1       N       A
-
-GeForce_GTX_1070_Ti                             *       29800   1       14      A
-GeForce_GTX_1080                                *       29800   1       14      A
-GeForce_GTX_1080_Ti                             *       29800   1       20      A
-GeForce_RTX_2080_Ti                             *       29800   1       40      A
-GeForce_RTX_3090                                *       29800   1       82      A
-
-ALIAS_AMD_RX6900XT                              *       29800   1       125     A
-ALIAS_AMD_W5700X                                *       29800   1       4       A
+#Name                                           Kern    Type    Width   Accel   Loops

@@ -8,12 +8,18 @@
 #include "memory.h"
 #include "event.h"
 #include "shared.h"
+#include "path.h"
 #include "folder.h"
 #include <libgen.h>
+#include <limits.h>
 
 #if defined (__APPLE__)
 #include "event.h"
-#elif defined (__FreeBSD__) || defined (__NetBSD__)
+#elif defined (__OpenBSD__)
+#define _OPENBSD_SOURCE
+#include <stdlib.h>
+#include <sys/sysctl.h>
+#elif defined (__FreeBSD__) || defined (__NetBSD__) || defined (__DragonFly__)
 #include <sys/param.h>
 #include <sys/sysctl.h>
 #endif
@@ -46,7 +52,7 @@ static int get_exec_path (char *exec_path, const size_t exec_path_sz)
 
   const size_t len = strlen (exec_path);
 
-  #elif defined (__FreeBSD__)
+  #elif defined (__FreeBSD__) || defined (__DragonFly__)
 
   int mib[4];
 
@@ -73,6 +79,41 @@ static int get_exec_path (char *exec_path, const size_t exec_path_sz)
   size_t size = exec_path_sz;
 
   sysctl (mib, 4, exec_path, &size, NULL, 0);
+
+  const size_t len = strlen (exec_path);
+
+  #elif defined (__OpenBSD__)
+
+  int mib[4];
+
+  mib[0] = CTL_KERN;
+  mib[1] = KERN_PROC_ARGS;
+  mib[2] = getpid ();
+  mib[3] = KERN_PROC_ARGV;
+
+  size_t size = 0;
+
+  if (sysctl (mib, 4, NULL, &size, NULL, 0) == -1) return -1;
+
+  char **argv = hcmalloc (size);
+
+  if (!argv) return -1;
+
+  if (sysctl (mib, 4, argv, &size, NULL, 0) == -1)
+  {
+    free (argv);
+
+    return -1;
+  }
+
+  if (argv[0])
+  {
+    strncpy (exec_path, argv[0], exec_path_sz - 1);
+
+    exec_path[exec_path_sz - 1] = '\0';
+  }
+
+  free (argv);
 
   const size_t len = strlen (exec_path);
 
@@ -109,10 +150,6 @@ static void get_install_dir (char *install_dir, const char *exec_path)
 #if defined (_POSIX)
 static void get_profile_dir (char *profile_dir, const char *home_dir)
 {
-  snprintf (profile_dir, HCBUFSIZ_TINY, "%s/%s", home_dir, DOT_HASHCAT);
-
-  if (hc_path_is_directory (profile_dir)) return;
-
   char *xdg_data_home = getenv ("XDG_DATA_HOME");
 
   if (xdg_data_home)
@@ -127,10 +164,6 @@ static void get_profile_dir (char *profile_dir, const char *home_dir)
 
 static void get_cache_dir (char *cache_dir, const char *home_dir)
 {
-  snprintf (cache_dir, HCBUFSIZ_TINY, "%s/%s", home_dir, DOT_HASHCAT);
-
-  if (hc_path_is_directory (cache_dir)) return;
-
   char *xdg_cache_home = getenv ("XDG_CACHE_HOME");
 
   if (xdg_cache_home)
@@ -412,6 +445,28 @@ int folder_config_init (hashcat_ctx_t *hashcat_ctx, MAYBE_UNUSED const char *ins
     get_cache_dir   (cache_dir,   home_dir);
     get_session_dir (session_dir, profile_dir);
 
+    // $HOME/.hashcat predates XDG support and used to win over it whenever it existed. It no longer
+    // does, so anyone who still has one has just had their potfile, sessions and kernel cache move.
+    //
+    // Nothing is copied or deleted, because guessing which of two potfiles a user wants is not a
+    // decision this should make silently. Say where things are now and let them move what they want.
+
+    char legacy_dir[HCBUFSIZ_TINY];
+
+    snprintf (legacy_dir, sizeof (legacy_dir), "%s/%s", home_dir, DOT_HASHCAT);
+
+    if (hc_path_is_directory (legacy_dir) == true)
+    {
+      event_log_warning (hashcat_ctx, "Found %s, which hashcat no longer uses.", legacy_dir);
+      event_log_warning (hashcat_ctx, "It is left untouched. Everything hashcat keeps per user is now in");
+      event_log_warning (hashcat_ctx, "  %s", profile_dir);
+      event_log_warning (hashcat_ctx, "and the kernel cache is in");
+      event_log_warning (hashcat_ctx, "  %s", cache_dir);
+      event_log_warning (hashcat_ctx, "That is potfiles and sessions, and anything else you were asked to put there.");
+      event_log_warning (hashcat_ctx, "Move what you still want across, then delete the old directory.");
+      event_log_warning (hashcat_ctx, NULL);
+    }
+
     shared_dir = hcstrdup (shared_folder);
 
     hc_mkdir_rec (profile_dir, 0700);
@@ -582,21 +637,27 @@ int hc_mkdir (const char *name, MAYBE_UNUSED const int mode)
 
 int hc_mkdir_rec (const char *path, MAYBE_UNUSED const int mode)
 {
+  if (hc_mkdir (path, mode) == 0) return 0;
+
+  if (errno == EEXIST) return 0;
+
   char *fullpath = hcstrdup (path);
 
   char *subpath = dirname (fullpath);
 
-  if (strlen (subpath) > 1)
+  if (hc_mkdir_rec (subpath, mode) == -1)
   {
-    if (hc_mkdir_rec (subpath, mode) == -1) return -1;
+    hcfree (fullpath);
+
+    return -1;
   }
+
+  hcfree (fullpath);
 
   if (hc_mkdir (path, mode) == -1)
   {
     if (errno != EEXIST) return -1;
   }
-
-  hcfree (fullpath);
 
   return 0;
 }

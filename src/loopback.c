@@ -8,6 +8,8 @@
 #include "memory.h"
 #include "event.h"
 #include "shared.h"
+#include "filehandling.h"
+#include "system.h"
 #include "locking.h"
 #include "loopback.h"
 
@@ -62,9 +64,9 @@ int loopback_init (hashcat_ctx_t *hashcat_ctx)
 
   if (user_options->usage          > 0)    return 0;
   if (user_options->backend_info   > 0)    return 0;
+  if (user_options->hash_info      > 0)    return 0;
 
   if (user_options->benchmark     == true) return 0;
-  if (user_options->hash_info     == true) return 0;
   if (user_options->keyspace      == true) return 0;
   if (user_options->left          == true) return 0;
   if (user_options->show          == true) return 0;
@@ -109,7 +111,7 @@ int loopback_write_open (hashcat_ctx_t *hashcat_ctx)
 
   if (hc_fopen (&loopback_ctx->fp, loopback_ctx->filename, "ab") == false)
   {
-    event_log_error (hashcat_ctx, "%s: %s", loopback_ctx->filename, strerror (errno));
+    event_log_error (hashcat_ctx, "%s: %s", loopback_ctx->filename, hc_fopen_strerror ());
 
     return -1;
   }

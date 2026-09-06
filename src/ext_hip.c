@@ -44,6 +44,7 @@ char *hipDllPath (char *hipSDKPath)
 int hip_init (void *hashcat_ctx)
 {
   backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+  user_options_t *user_options = ((hashcat_ctx_t *) hashcat_ctx)->user_options;
 
   HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
 
@@ -88,10 +89,50 @@ int hip_init (void *hashcat_ctx)
   }
 
   #else
+  // Hygon DTK ships libamdhip64.so as an alias for libgalaxyhip.so, so the DTK
+  // runtime is reached through the standard AMD name. Keep libamdhip64 first and
+  // identify the runtime from an exported symbol once the library is open, rather
+  // than from the order in which the names were tried.
+
   hip->lib = hc_dlopen ("libamdhip64.so");
+
+  // The unversioned name is a link that only the -dev package ships, so on a
+  // distro that splits its packages the runtime is installed and this still
+  // fails. Fall back to the sonames, newest first, the way the CUDA and NVRTC
+  // loaders already do. The range is walked rather than hardcoded so a later
+  // ROCm does not need another edit here.
+
+  if (hip->lib == NULL)
+  {
+    char soname[64];
+
+    for (int major = 9; major >= 4; major--)
+    {
+      snprintf (soname, sizeof (soname), "libamdhip64.so.%d", major);
+
+      hip->lib = hc_dlopen (soname);
+
+      if (hip->lib) break;
+    }
+  }
   #endif
 
   if (hip->lib == NULL) return -1;
+
+  // DTK's libamdhip64.so is libgalaxyhip.so. Identify the runtime from a symbol
+  // the ROCm library does not export. Hygon currently ships the misspelled
+  // hipExtGetNearstCPU, so probe the correct spelling too in case a later DTK
+  // fixes it.
+  hip->is_dtk = (hc_dlsym (hip->lib, "hipExtGetNearstCPU") != NULL)
+             || (hc_dlsym (hip->lib, "hipExtGetNearestCPU") != NULL);
+
+  if (hip->is_dtk == true)
+  {
+    if (user_options->quiet == false)
+    {
+      event_log_info (hashcat_ctx, "Hygon DTK HIP runtime detected, selecting the DTK ABI.");
+    }
+  }
 
   // finding the right symbol is a PITA,
   #define HC_LOAD_FUNC_HIP(ptr,name,hipname,type,libname,noerr) \
@@ -111,49 +152,81 @@ int hip_init (void *hashcat_ctx)
       } \
     } while (0)
 
+  #define HC_LOAD_FUNC_HIP_FALLBACK(ptr,name,hipname,hipname2,type,libname,noerr) \
+    do { \
+      ptr->name = (type) hc_dlsym ((ptr)->lib, #hipname); \
+      if (!(ptr)->name) ptr->name = (type) hc_dlsym ((ptr)->lib, #hipname2); \
+      if ((noerr) != -1) { \
+        if (!(ptr)->name) { \
+          if ((noerr) == 1) { \
+            event_log_error (hashcat_ctx, "%s is missing from %s shared library.", #name, #libname); \
+            return -1; \
+          } \
+          if ((noerr) != 1) { \
+            event_log_warning (hashcat_ctx, "%s is missing from %s shared library.", #name, #libname); \
+            return 0; \
+          } \
+        } \
+      } \
+    } while (0)
+
   // finding the right symbol is a PITA, because of the _v2 suffix
   // a good reference is cuda.h itself
   // this needs to be verified for each new cuda release
 
-  HC_LOAD_FUNC_HIP (hip, hipCtxCreate,              hipCtxCreate,               HIP_HIPCTXCREATE,               HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipCtxDestroy,             hipCtxDestroy,              HIP_HIPCTXDESTROY,              HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipCtxPopCurrent,          hipCtxPopCurrent,           HIP_HIPCTXPOPCURRENT,           HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipCtxPushCurrent,         hipCtxPushCurrent,          HIP_HIPCTXPUSHCURRENT,          HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipCtxSetCurrent,          hipCtxSetCurrent,           HIP_HIPCTXSETCURRENT,           HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipCtxSynchronize,         hipCtxSynchronize,          HIP_HIPCTXSYNCHRONIZE,          HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipDeviceGet,              hipDeviceGet,               HIP_HIPDEVICEGET,               HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipDeviceGetAttribute,     hipDeviceGetAttribute,      HIP_HIPDEVICEGETATTRIBUTE,      HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipDeviceGetCount,         hipGetDeviceCount,          HIP_HIPDEVICEGETCOUNT,          HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipDeviceGetName,          hipDeviceGetName,           HIP_HIPDEVICEGETNAME,           HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipDeviceTotalMem,         hipDeviceTotalMem,          HIP_HIPDEVICETOTALMEM,          HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipDriverGetVersion,       hipDriverGetVersion,        HIP_HIPDRIVERGETVERSION,        HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipEventCreate,            hipEventCreateWithFlags,    HIP_HIPEVENTCREATE,             HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipEventDestroy,           hipEventDestroy,            HIP_HIPEVENTDESTROY,            HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipEventElapsedTime,       hipEventElapsedTime,        HIP_HIPEVENTELAPSEDTIME,        HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipEventRecord,            hipEventRecord,             HIP_HIPEVENTRECORD,             HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipEventSynchronize,       hipEventSynchronize,        HIP_HIPEVENTSYNCHRONIZE,        HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipFuncGetAttribute,       hipFuncGetAttribute,        HIP_HIPFUNCGETATTRIBUTE,        HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipGetErrorName,           hipGetErrorName,            HIP_HIPGETERRORNAME,            HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipGetErrorString,         hipGetErrorString,          HIP_HIPGETERRORSTRING,          HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipInit,                   hipInit,                    HIP_HIPINIT,                    HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipLaunchKernel,           hipModuleLaunchKernel,      HIP_HIPLAUNCHKERNEL,            HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemAlloc,               hipMalloc,                  HIP_HIPMEMALLOC,                HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemFree,                hipFree,                    HIP_HIPMEMFREE,                 HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemGetInfo,             hipMemGetInfo,              HIP_HIPMEMGETINFO,              HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemcpyDtoDAsync,        hipMemcpyDtoDAsync,         HIP_HIPMEMCPYDTODASYNC,         HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemcpyDtoHAsync,        hipMemcpyDtoHAsync,         HIP_HIPMEMCPYDTOHASYNC,         HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemcpyHtoDAsync,        hipMemcpyHtoDAsync,         HIP_HIPMEMCPYHTODASYNC,         HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemsetD32Async,         hipMemsetD32Async,          HIP_HIPMEMSETD32ASYNC,          HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemsetD8Async,          hipMemsetD8Async,           HIP_HIPMEMSETD8ASYNC,           HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipMemcpyHtoDAsync,        hipMemcpyHtoDAsync,         HIP_HIPMEMCPYHTODASYNC,         HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipModuleGetFunction,      hipModuleGetFunction,       HIP_HIPMODULEGETFUNCTION,       HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipModuleGetGlobal,        hipModuleGetGlobal,         HIP_HIPMODULEGETGLOBAL,         HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipModuleLoadDataEx,       hipModuleLoadDataEx,        HIP_HIPMODULELOADDATAEX,        HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipModuleUnload,           hipModuleUnload,            HIP_HIPMODULEUNLOAD,            HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipRuntimeGetVersion,      hipRuntimeGetVersion,       HIP_HIPRUNTIMEGETVERSION,       HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipStreamCreate,           hipStreamCreate,            HIP_HIPSTREAMCREATE,            HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipStreamDestroy,          hipStreamDestroy,           HIP_HIPSTREAMDESTROY,           HIP, 1);
-  HC_LOAD_FUNC_HIP (hip, hipStreamSynchronize,      hipStreamSynchronize,       HIP_HIPSTREAMSYNCHRONIZE,       HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipCtxCreate,              hipCtxCreate,                 HIP_HIPCTXCREATE,               HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipCtxDestroy,             hipCtxDestroy,                HIP_HIPCTXDESTROY,              HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipCtxPopCurrent,          hipCtxPopCurrent,             HIP_HIPCTXPOPCURRENT,           HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipCtxPushCurrent,         hipCtxPushCurrent,            HIP_HIPCTXPUSHCURRENT,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipCtxSetCurrent,          hipCtxSetCurrent,             HIP_HIPCTXSETCURRENT,           HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipCtxSynchronize,         hipCtxSynchronize,            HIP_HIPCTXSYNCHRONIZE,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipDeviceGet,              hipDeviceGet,                 HIP_HIPDEVICEGET,               HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipDeviceGetAttribute,     hipDeviceGetAttribute,        HIP_HIPDEVICEGETATTRIBUTE,      HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipDeviceGetCount,         hipGetDeviceCount,            HIP_HIPDEVICEGETCOUNT,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipDeviceGetName,          hipDeviceGetName,             HIP_HIPDEVICEGETNAME,           HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipDeviceTotalMem,         hipDeviceTotalMem,            HIP_HIPDEVICETOTALMEM,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipDriverGetVersion,       hipDriverGetVersion,          HIP_HIPDRIVERGETVERSION,        HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipEventCreate,            hipEventCreate,               HIP_HIPEVENTCREATE,             HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipEventCreateWithFlags,   hipEventCreateWithFlags,      HIP_HIPEVENTCREATEWITHFLAGS,    HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipEventDestroy,           hipEventDestroy,              HIP_HIPEVENTDESTROY,            HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipEventElapsedTime,       hipEventElapsedTime,          HIP_HIPEVENTELAPSEDTIME,        HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipEventRecord,            hipEventRecord,               HIP_HIPEVENTRECORD,             HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipEventSynchronize,       hipEventSynchronize,          HIP_HIPEVENTSYNCHRONIZE,        HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipFuncGetAttribute,       hipFuncGetAttribute,          HIP_HIPFUNCGETATTRIBUTE,        HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipGetErrorName,           hipDrvGetErrorName,           HIP_HIPGETERRORNAME,            HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipGetErrorString,         hipDrvGetErrorString,         HIP_HIPGETERRORSTRING,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipInit,                   hipInit,                      HIP_HIPINIT,                    HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipLaunchKernel,           hipModuleLaunchKernel,        HIP_HIPLAUNCHKERNEL,            HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemAlloc,               hipMalloc,                    HIP_HIPMEMALLOC,                HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemFree,                hipFree,                      HIP_HIPMEMFREE,                 HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemGetInfo,             hipMemGetInfo,                HIP_HIPMEMGETINFO,              HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemcpyDtoD,             hipMemcpyDtoD,                HIP_HIPMEMCPYDTOD,              HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemcpyDtoH,             hipMemcpyDtoH,                HIP_HIPMEMCPYDTOH,              HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemcpyHtoD,             hipMemcpyHtoD,                HIP_HIPMEMCPYHTOD,              HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemsetD32,              hipMemsetD32,                 HIP_HIPMEMSETD32,               HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemsetD8,               hipMemsetD8,                  HIP_HIPMEMSETD8,                HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemcpyDtoDAsync,        hipMemcpyDtoDAsync,           HIP_HIPMEMCPYDTODASYNC,         HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemcpyDtoHAsync,        hipMemcpyDtoHAsync,           HIP_HIPMEMCPYDTOHASYNC,         HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemcpyHtoDAsync,        hipMemcpyHtoDAsync,           HIP_HIPMEMCPYHTODASYNC,         HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemsetD32Async,         hipMemsetD32Async,            HIP_HIPMEMSETD32ASYNC,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipMemsetD8Async,          hipMemsetD8Async,             HIP_HIPMEMSETD8ASYNC,           HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipModuleGetFunction,      hipModuleGetFunction,         HIP_HIPMODULEGETFUNCTION,       HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipModuleGetGlobal,        hipModuleGetGlobal,           HIP_HIPMODULEGETGLOBAL,         HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipModuleLoadDataEx,       hipModuleLoadDataEx,          HIP_HIPMODULELOADDATAEX,        HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipModuleUnload,           hipModuleUnload,              HIP_HIPMODULEUNLOAD,            HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipRuntimeGetVersion,      hipRuntimeGetVersion,         HIP_HIPRUNTIMEGETVERSION,       HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipSetDevice,              hipSetDevice,                 HIP_HIPSETDEVICE,               HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipSetDeviceFlags,         hipSetDeviceFlags,            HIP_HIPSETDEVICEFLAGS,          HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipStreamCreate,           hipStreamCreate,              HIP_HIPSTREAMCREATE,            HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipStreamCreateWithFlags,  hipStreamCreateWithFlags,     HIP_HIPSTREAMCREATEWITHFLAGS,   HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipStreamDestroy,          hipStreamDestroy,             HIP_HIPSTREAMDESTROY,           HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipStreamSynchronize,      hipStreamSynchronize,         HIP_HIPSTREAMSYNCHRONIZE,       HIP, 1);
+  HC_LOAD_FUNC_HIP_FALLBACK (hip, hipGetDeviceProperties,    hipGetDevicePropertiesR0600,  hipGetDeviceProperties, HIP_HIPGETDEVICEPROPERTIES,     HIP, 1);
+  HC_LOAD_FUNC_HIP (hip, hipModuleOccupancyMaxActiveBlocksPerMultiprocessor, hipModuleOccupancyMaxActiveBlocksPerMultiprocessor, HIP_HIPMODULEOCCUPANCYMAXACTIVEBLOCKSPERMULTIPROCESSOR, HIP, 1);
+
+  // Both ABIs export the same symbol with the same calling convention. Only
+  // the output structure layout differs, so keep a layout-correct DTK pointer.
+  hip->hipGetDevicePropertiesDTK = (HIP_HIPGETDEVICEPROPERTIES_DTK) hip->hipGetDeviceProperties;
 
   return 0;
 }
@@ -168,13 +241,71 @@ void hip_close (void *hashcat_ctx)
   {
     if (hip->lib)
     {
-      hc_dlclose (hip->lib);
+      // Hygon DTK registers C++ exit handlers that call back into libgalaxyhip.so.
+      // Closing the handle here would leave those handlers pointing at unmapped
+      // memory and crash the process during exit, so keep the library loaded.
+      if (hip->is_dtk == false)
+      {
+        hc_dlclose (hip->lib);
+      }
     }
 
     hcfree (backend_ctx->hip);
 
     backend_ctx->hip = NULL;
   }
+}
+
+int hc_hipEventDestroyPtr (void *hashcat_ctx, hipEvent_t *hEvent)
+{
+  int rc = -1;
+
+  if (hEvent == NULL || *hEvent == NULL) return rc;
+
+  rc = hc_hipEventDestroy (hashcat_ctx, *hEvent);
+
+  *hEvent = NULL;
+
+  return rc;
+}
+
+int hc_hipMemFreePtr (void *hashcat_ctx, hipDeviceptr_t *dptr)
+{
+  int rc = -1;
+
+  if (dptr == NULL || *dptr == NULL) return rc;
+
+  rc = hc_hipMemFree (hashcat_ctx, *dptr);
+
+  *dptr = 0;
+
+  return rc;
+}
+
+int hc_hipModuleUnloadPtr (void *hashcat_ctx, hipModule_t *hmod)
+{
+  int rc = -1;
+
+  if (hmod == NULL || *hmod == NULL) return rc;
+
+  rc = hc_hipModuleUnload (hashcat_ctx, *hmod);
+
+  *hmod = NULL;
+
+  return rc;
+}
+
+int hc_hipStreamDestroyPtr (void *hashcat_ctx, hipStream_t *hStream)
+{
+  int rc = -1;
+
+  if (hStream == NULL || *hStream == NULL) return rc;
+
+  rc = hc_hipStreamDestroy (hashcat_ctx, *hStream);
+
+  *hStream = NULL;
+
+  return rc;
 }
 
 int hc_hipCtxCreate (void *hashcat_ctx, hipCtx_t *pctx, unsigned int flags, hipDevice_t dev)
@@ -372,7 +503,31 @@ int hc_hipDeviceGetAttribute (void *hashcat_ctx, int *pi, hipDeviceAttribute_t a
 
   HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
 
-  const hipError_t HIP_err = hip->hipDeviceGetAttribute (pi, attrib, dev);
+  int attrib_actual = (int) attrib;
+
+  if (hip->is_dtk)
+  {
+    switch (attrib)
+    {
+      case hipDeviceAttributeMaxThreadsPerBlock:            attrib_actual = 18; break;
+      case hipDeviceAttributeMaxSharedMemoryPerBlock:       attrib_actual = 25; break;
+      case hipDeviceAttributeTotalConstantMemory:           attrib_actual = 26; break;
+      case hipDeviceAttributeWarpSize:                      attrib_actual = 27; break;
+      case hipDeviceAttributeMaxRegistersPerBlock:          attrib_actual = 28; break;
+      case hipDeviceAttributeClockRate:                     attrib_actual = 29; break;
+      case hipDeviceAttributeMultiprocessorCount:           attrib_actual = 32; break;
+      case hipDeviceAttributeComputeCapabilityMajor:        attrib_actual = 36; break;
+      case hipDeviceAttributeComputeCapabilityMinor:        attrib_actual = 37; break;
+      case hipDeviceAttributePciBusId:                      attrib_actual = 39; break;
+      case hipDeviceAttributePciDeviceId:                   attrib_actual = 40; break;
+      case hipDeviceAttributeIntegrated:                    attrib_actual = 42; break;
+      case hipDeviceAttributeMaxRegistersPerMultiprocessor: attrib_actual = 69; break;
+      case hipDeviceAttributeKernelExecTimeout:             attrib_actual = 79; break;
+      default:                                             break;
+    }
+  }
+
+  const hipError_t HIP_err = hip->hipDeviceGetAttribute (pi, (hipDeviceAttribute_t) attrib_actual, dev);
 
   if (HIP_err != hipSuccess)
   {
@@ -380,11 +535,11 @@ int hc_hipDeviceGetAttribute (void *hashcat_ctx, int *pi, hipDeviceAttribute_t a
 
     if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
     {
-      event_log_error (hashcat_ctx, "hipDeviceGetAttribute(): %s", pStr);
+      event_log_error (hashcat_ctx, "hipDeviceGetAttribute(dev=%d, attrib=%d): %s", dev, attrib_actual, pStr);
     }
     else
     {
-      event_log_error (hashcat_ctx, "hipDeviceGetAttribute(): %d", HIP_err);
+      event_log_error (hashcat_ctx, "hipDeviceGetAttribute(dev=%d, attrib=%d): %d", dev, attrib_actual, HIP_err);
     }
 
     return -1;
@@ -501,13 +656,13 @@ int hc_hipDriverGetVersion (void *hashcat_ctx, int *driverVersion)
   return 0;
 }
 
-int hc_hipEventCreate (void *hashcat_ctx, hipEvent_t *phEvent, unsigned int Flags)
+int hc_hipEventCreate (void *hashcat_ctx, hipEvent_t *phEvent)
 {
   backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
 
   HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
 
-  const hipError_t HIP_err = hip->hipEventCreate (phEvent, Flags);
+  const hipError_t HIP_err = hip->hipEventCreate (phEvent);
 
   if (HIP_err != hipSuccess)
   {
@@ -520,6 +675,33 @@ int hc_hipEventCreate (void *hashcat_ctx, hipEvent_t *phEvent, unsigned int Flag
     else
     {
       event_log_error (hashcat_ctx, "hipEventCreate(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipEventCreateWithFlags (void *hashcat_ctx, hipEvent_t *phEvent, unsigned int flags)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipEventCreateWithFlags (phEvent, flags);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipEventCreateWithFlags(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipEventCreateWithFlags(): %d", HIP_err);
     }
 
     return -1;
@@ -700,6 +882,13 @@ int hc_hipInit (void *hashcat_ctx, unsigned int Flags)
 
   if (HIP_err != hipSuccess)
   {
+    // A machine carrying the HIP runtime with no AMD GPU in it reports this on every run, and an
+    // NVIDIA machine with ROCm installed is the ordinary case for it. The caller closes the runtime
+    // and moves on to the next backend, so nothing is wrong and nothing needs saying. Every other
+    // failure still gets named.
+
+    if (HIP_err == hipErrorNoDevice) return -1;
+
     const char *pStr = NULL;
 
     if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
@@ -790,6 +979,143 @@ int hc_hipMemGetInfo (void *hashcat_ctx, size_t *free, size_t *total)
     else
     {
       event_log_error (hashcat_ctx, "hipMemGetInfo(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+
+
+int hc_hipMemcpyDtoH (void *hashcat_ctx, void *dstHost, hipDeviceptr_t srcDevice, size_t ByteCount)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipMemcpyDtoH (dstHost, srcDevice, ByteCount);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipMemcpyDtoH(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipMemcpyDtoH(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipMemcpyDtoD (void *hashcat_ctx, hipDeviceptr_t dstDevice, hipDeviceptr_t srcDevice, size_t ByteCount)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipMemcpyDtoD (dstDevice, srcDevice, ByteCount);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipMemcpyDtoD(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipMemcpyDtoD(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipMemcpyHtoD (void *hashcat_ctx, hipDeviceptr_t dstDevice, const void *srcHost, size_t ByteCount)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipMemcpyHtoD (dstDevice, srcHost, ByteCount);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipMemcpyHtoD(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipMemcpyHtoD(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipMemsetD32 (void *hashcat_ctx, hipDeviceptr_t dstDevice, unsigned int ui, size_t N)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipMemsetD32 (dstDevice, ui, N);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipMemsetD32(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipMemsetD32(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipMemsetD8 (void *hashcat_ctx, hipDeviceptr_t dstDevice, unsigned char uc, size_t N)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipMemsetD8 (dstDevice, uc, N);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipMemsetD8(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipMemsetD8(): %d", HIP_err);
     }
 
     return -1;
@@ -1068,13 +1394,67 @@ int hc_hipRuntimeGetVersion (void *hashcat_ctx, int *runtimeVersion)
   return 0;
 }
 
-int hc_hipStreamCreate (void *hashcat_ctx, hipStream_t *phStream, unsigned int Flags)
+int hc_hipSetDevice (void *hashcat_ctx, hipDevice_t dev)
 {
   backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
 
   HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
 
-  const hipError_t HIP_err = hip->hipStreamCreate (phStream, Flags);
+  const hipError_t HIP_err = hip->hipSetDevice (dev);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipSetDevice(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipSetDevice(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipSetDeviceFlags (void *hashcat_ctx, unsigned int flags)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipSetDeviceFlags (flags);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipSetDeviceFlags(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipSetDeviceFlags(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipStreamCreate (void *hashcat_ctx, hipStream_t *phStream)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipStreamCreate (phStream);
 
   if (HIP_err != hipSuccess)
   {
@@ -1087,6 +1467,33 @@ int hc_hipStreamCreate (void *hashcat_ctx, hipStream_t *phStream, unsigned int F
     else
     {
       event_log_error (hashcat_ctx, "hipStreamCreate(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipStreamCreateWithFlags (void *hashcat_ctx, hipStream_t *phStream, unsigned int Flags)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipStreamCreateWithFlags (phStream, Flags);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipStreamCreateWithFlags(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipStreamCreateWithFlags(): %d", HIP_err);
     }
 
     return -1;
@@ -1141,6 +1548,145 @@ int hc_hipStreamSynchronize (void *hashcat_ctx, hipStream_t hStream)
     else
     {
       event_log_error (hashcat_ctx, "hipStreamSynchronize(): %d", HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipGetDeviceProperties (void *hashcat_ctx, hipDeviceProp_t *prop, hipDevice_t dev)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  if (hip->is_dtk)
+  {
+    hipDevicePropDTK_t dprop;
+
+    memset (&dprop, 0, sizeof (dprop));
+
+    const hipError_t HIP_err = hip->hipGetDevicePropertiesDTK (&dprop, dev);
+
+    if (HIP_err != hipSuccess)
+    {
+      const char *pStr = NULL;
+
+      if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+      {
+        event_log_error (hashcat_ctx, "hipGetDeviceProperties(dev=%d): %s", dev, pStr);
+      }
+      else
+      {
+        event_log_error (hashcat_ctx, "hipGetDeviceProperties(dev=%d): %d", dev, HIP_err);
+      }
+
+      return -1;
+    }
+
+    // Map the legacy DTK layout into the ROCm layout hashcat expects elsewhere.
+    memset (prop, 0, sizeof (*prop));
+
+    memcpy (prop->name, dprop.name, sizeof (prop->name) - 1);
+    prop->name[sizeof (prop->name) - 1] = 0;
+    prop->totalGlobalMem       = dprop.totalGlobalMem;
+    prop->sharedMemPerBlock    = dprop.sharedMemPerBlock;
+    prop->regsPerBlock         = dprop.regsPerBlock;
+    prop->warpSize             = dprop.warpSize;
+    prop->maxThreadsPerBlock   = dprop.maxThreadsPerBlock;
+    memcpy (prop->maxThreadsDim, dprop.maxThreadsDim, sizeof (dprop.maxThreadsDim));
+    for (int i = 0; i < 3; i++) prop->maxGridSize[i] = (int) dprop.maxGridSize[i];
+    prop->clockRate            = dprop.clockRate;
+    prop->totalConstMem        = dprop.totalConstMem;
+    prop->major                = dprop.major;
+    prop->minor                = dprop.minor;
+    prop->multiProcessorCount  = dprop.multiProcessorCount;
+    prop->l2CacheSize          = dprop.l2CacheSize;
+    prop->maxThreadsPerMultiProcessor = dprop.maxThreadsPerMultiProcessor;
+    prop->computeMode          = dprop.computeMode;
+    prop->clockInstructionRate = dprop.clockInstructionRate;
+    prop->arch                 = dprop.arch;
+    prop->concurrentKernels    = dprop.concurrentKernels;
+    prop->pciDomainID          = dprop.pciDomainID;
+    prop->pciBusID             = dprop.pciBusID;
+    prop->pciDeviceID          = dprop.pciDeviceID;
+    prop->maxSharedMemoryPerMultiProcessor = dprop.maxSharedMemoryPerMultiProcessor;
+    prop->isMultiGpuBoard      = dprop.isMultiGpuBoard;
+    prop->canMapHostMemory     = dprop.canMapHostMemory;
+    memcpy (prop->gcnArchName, dprop.gcnArchName, sizeof (prop->gcnArchName) - 1);
+    prop->gcnArchName[sizeof (prop->gcnArchName) - 1] = 0;
+    prop->integrated           = dprop.integrated;
+    prop->cooperativeLaunch    = dprop.cooperativeLaunch;
+    prop->cooperativeMultiDeviceLaunch = dprop.cooperativeMultiDeviceLaunch;
+    prop->maxTexture1DLinear   = dprop.maxTexture1DLinear;
+    prop->maxTexture1D         = dprop.maxTexture1D;
+    memcpy (prop->maxTexture2D, dprop.maxTexture2D, sizeof (dprop.maxTexture2D));
+    memcpy (prop->maxTexture3D, dprop.maxTexture3D, sizeof (dprop.maxTexture3D));
+    prop->hdpMemFlushCntl      = dprop.hdpMemFlushCntl;
+    prop->hdpRegFlushCntl      = dprop.hdpRegFlushCntl;
+    prop->memPitch             = dprop.memPitch;
+    prop->textureAlignment     = dprop.textureAlignment;
+    prop->texturePitchAlignment = dprop.texturePitchAlignment;
+    prop->kernelExecTimeoutEnabled = dprop.kernelExecTimeoutEnabled;
+    prop->ECCEnabled           = dprop.ECCEnabled;
+    prop->tccDriver            = dprop.tccDriver;
+    prop->cooperativeMultiDeviceUnmatchedFunc      = dprop.cooperativeMultiDeviceUnmatchedFunc;
+    prop->cooperativeMultiDeviceUnmatchedGridDim   = dprop.cooperativeMultiDeviceUnmatchedGridDim;
+    prop->cooperativeMultiDeviceUnmatchedBlockDim  = dprop.cooperativeMultiDeviceUnmatchedBlockDim;
+    prop->cooperativeMultiDeviceUnmatchedSharedMem = dprop.cooperativeMultiDeviceUnmatchedSharedMem;
+    prop->isLargeBar           = dprop.isLargeBar;
+    prop->asicRevision         = dprop.asicRevision;
+    prop->managedMemory        = dprop.managedMemory;
+    prop->directManagedMemAccessFromHost = dprop.directManagedMemAccessFromHost;
+    prop->concurrentManagedAccess = dprop.concurrentManagedAccess;
+    prop->pageableMemoryAccess = dprop.pageableMemoryAccess;
+    prop->pageableMemoryAccessUsesHostPageTables = dprop.pageableMemoryAccessUsesHostPageTables;
+
+    return 0;
+  }
+
+  const hipError_t HIP_err = hip->hipGetDeviceProperties (prop, dev);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipGetDeviceProperties(dev=%d): %s", dev, pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipGetDeviceProperties(dev=%d): %d", dev, HIP_err);
+    }
+
+    return -1;
+  }
+
+  return 0;
+}
+
+int hc_hipModuleOccupancyMaxActiveBlocksPerMultiprocessor (void *hashcat_ctx, int *numBlocks, hipFunction_t f, int blockSize, size_t dynSharedMemPerBlk)
+{
+  backend_ctx_t *backend_ctx = ((hashcat_ctx_t *) hashcat_ctx)->backend_ctx;
+
+  HIP_PTR *hip = (HIP_PTR *) backend_ctx->hip;
+
+  const hipError_t HIP_err = hip->hipModuleOccupancyMaxActiveBlocksPerMultiprocessor (numBlocks, f, blockSize, dynSharedMemPerBlk);
+
+  if (HIP_err != hipSuccess)
+  {
+    const char *pStr = NULL;
+
+    if (hip->hipGetErrorString (HIP_err, &pStr) == hipSuccess)
+    {
+      event_log_error (hashcat_ctx, "hipModuleOccupancyMaxActiveBlocksPerMultiprocessor(): %s", pStr);
+    }
+    else
+    {
+      event_log_error (hashcat_ctx, "hipModuleOccupancyMaxActiveBlocksPerMultiprocessor(): %d", HIP_err);
     }
 
     return -1;

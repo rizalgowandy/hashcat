@@ -19,9 +19,12 @@
 #include M2S(INCLUDE_PATH/inc_cipher_kuznyechik.cl)
 #endif
 
+#define VC_DATA_LEN (448)
+#define VC_SALT_LEN ( 64)
+
 typedef struct vc
 {
-  u32 data_buf[112];
+  u32 data_buf[VC_DATA_LEN / 4];
   u32 keyfile_buf16[16];
   u32 keyfile_buf32[32];
   u32 keyfile_enabled;
@@ -197,7 +200,7 @@ DECLSPEC void hmac_sha512_run_V (PRIVATE_AS u32x *w0, PRIVATE_AS u32x *w1, PRIVA
   sha512_transform_vector (w0, w1, w2, w3, w4, w5, w6, w7, digest);
 }
 
-KERNEL_FQ void m13722_init (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
+KERNEL_FQ KERNEL_FA void m13722_init (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);
@@ -209,6 +212,17 @@ KERNEL_FQ void m13722_init (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
 
   const int keyboard_layout_mapping_cnt = esalt_bufs[DIGESTS_OFFSET_HOST].keyboard_layout_mapping_cnt;
 
+  #if ATTACK_MODE == 9
+
+  // An association attack takes its hash from the global id, so a copy shared by the whole
+  // workgroup would hold a different hash's keyboard layout map in every slot. The map is read
+  // out of global memory instead, which is what KEYBOARD_MAP_AS carries into the function that
+  // walks it.
+
+  GLOBAL_AS const keyboard_layout_mapping_t *s_keyboard_layout_mapping_buf = esalt_bufs[DIGESTS_OFFSET_HOST].keyboard_layout_mapping_buf;
+
+  #else
+
   LOCAL_VK keyboard_layout_mapping_t s_keyboard_layout_mapping_buf[256];
 
   for (u32 i = lid; i < 256; i += lsz)
@@ -217,6 +231,8 @@ KERNEL_FQ void m13722_init (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
   }
 
   SYNC_THREADS ();
+
+  #endif
 
   if (gid >= GID_CNT) return;
 
@@ -287,7 +303,7 @@ KERNEL_FQ void m13722_init (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
   tmps[gid].opad[6] = sha512_hmac_ctx.opad.h[6];
   tmps[gid].opad[7] = sha512_hmac_ctx.opad.h[7];
 
-  sha512_hmac_update_global_swap (&sha512_hmac_ctx, salt_bufs[SALT_POS_HOST].salt_buf, 64);
+  sha512_hmac_update_global_swap (&sha512_hmac_ctx, salt_bufs[SALT_POS_HOST].salt_buf, VC_SALT_LEN);
 
   for (u32 i = 0, j = 1; i < 16; i += 8, j += 1)
   {
@@ -359,7 +375,7 @@ KERNEL_FQ void m13722_init (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
   }
 }
 
-KERNEL_FQ void m13722_loop (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
+KERNEL_FQ KERNEL_FA void m13722_loop (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
 {
   const u64 gid = get_global_id (0);
 
@@ -534,7 +550,7 @@ KERNEL_FQ void m13722_loop (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
   }
 }
 
-KERNEL_FQ void m13722_loop_extended (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
+KERNEL_FQ KERNEL_FA void m13722_loop_extended (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);
@@ -611,7 +627,7 @@ KERNEL_FQ void m13722_loop_extended (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
   }
 }
 
-KERNEL_FQ void m13722_comp (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
+KERNEL_FQ KERNEL_FA void m13722_comp (KERN_ATTR_TMPS_ESALT (vc64_tmp_t, vc_t))
 {
   const u64 gid = get_global_id (0);
   const u64 lid = get_local_id (0);

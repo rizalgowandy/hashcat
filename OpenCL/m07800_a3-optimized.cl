@@ -62,16 +62,12 @@ DECLSPEC void m07800m (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
    * salt
    */
 
-  u32 salt_buf[8];
+  u32 salt_buf[4];
 
   salt_buf[0] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[0]);
   salt_buf[1] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[1]);
   salt_buf[2] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[2]);
   salt_buf[3] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[3]);
-  salt_buf[4] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[4]);
-  salt_buf[5] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[5]);
-  salt_buf[6] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[6]);
-  salt_buf[7] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[7]);
 
   const u32 salt_len = salt_bufs[SALT_POS_HOST].salt_len;
 
@@ -84,10 +80,10 @@ DECLSPEC void m07800m (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
   s0[1] = salt_buf[1];
   s0[2] = salt_buf[2];
   s0[3] = salt_buf[3];
-  s1[0] = salt_buf[4];
-  s1[1] = salt_buf[5];
-  s1[2] = salt_buf[6];
-  s1[3] = salt_buf[7];
+  s1[0] = 0;
+  s1[1] = 0;
+  s1[2] = 0;
+  s1[3] = 0;
   s2[0] = 0;
   s2[1] = 0;
   s2[2] = 0;
@@ -119,7 +115,19 @@ DECLSPEC void m07800m (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
      * SAP
      */
 
-    u32 final[32];
+    // 32 was sized for pw_len alone. SETSHIFTEDINT() below packs three
+    // variable-length pieces into final[] back to back with no bounds check:
+    // the candidate (up to pw_max, 55 for -O), a SHA1-digest-derived "magic
+    // array" chunk (32 + up to 50 from ten mod-6 terms, so up to 82), and
+    // the salt (up to salt_max, 51 for -O). 55+82+51 = 188 bytes needs index
+    // 47 (and SETSHIFTEDINT also touches d+1), i.e. 49 u32 minimum -- 32
+    // overflows by design for realistic inputs, not just contrived ones.
+    // Sized here to the worst case with headroom; the sha1_transform calls
+    // a few lines down still only ever process the first two 64-byte blocks
+    // of it (final+0..32), which is a separate, not-yet-addressed question:
+    // whether that's a correctness gap for inputs long enough to need a
+    // third block is outside the scope of this memory-safety fix.
+    u32 final[64];
 
     final[ 0] = w0[0] | s0[0];
     final[ 1] = w0[1] | s0[1];
@@ -206,14 +214,22 @@ DECLSPEC void m07800m (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
     final[ 5] = w1[1];
     final[ 6] = w1[2];
     final[ 7] = w1[3];
-    final[ 8] = 0;
-    final[ 9] = 0;
+    final[ 8] = w2[0];
+    final[ 9] = w2[1];
     final[10] = 0;
     final[11] = 0;
     final[12] = 0;
     final[13] = 0;
     final[14] = 0;
     final[15] = 0;
+
+    // final[] can hold up to 4 SHA1 blocks (see the SETSHIFTEDINT fix); only
+    // the first block (final[0..15]) is set above, and SETSHIFTEDINT() below
+    // only ever writes as many bytes as are actually appended, so anything
+    // past the appended data and before the length word placed by the block
+    // loop further down would otherwise be uninitialized.
+
+    for (u32 j = 16; j < 64; j++) final[j] = 0;
 
     u32 final_len = pw_len;
 
@@ -248,21 +264,20 @@ DECLSPEC void m07800m (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
     final_len += salt_len;
 
     // calculate
+    //
+    // final_len can reach up to 188 bytes (pw_max 55 + magic_max 82 +
+    // salt_max 51), needing up to 4 SHA1 blocks with padding -- this used to
+    // be hardcoded to at most 2 blocks, silently dropping anything past byte
+    // 119 into a wrong digest instead of a crash.
 
-    if (final_len >= 56)
+    const u32 n_blocks = ((final_len + 8) / 64) + 1;
+
+    final[(n_blocks * 16) - 2] = 0;
+    final[(n_blocks * 16) - 1] = final_len * 8;
+
+    for (u32 b = 0; b < n_blocks; b++)
     {
-      final[30] = 0;
-      final[31] = final_len * 8;
-
-      sha1_transform (final +  0, final +  4, final +  8, final + 12, digest);
-      sha1_transform (final + 16, final + 20, final + 24, final + 28, digest);
-    }
-    else
-    {
-      final[14] = 0;
-      final[15] = final_len * 8;
-
-      sha1_transform (final +  0, final +  4, final +  8, final + 12, digest);
+      sha1_transform (final + (b * 16) + 0, final + (b * 16) + 4, final + (b * 16) + 8, final + (b * 16) + 12, digest);
     }
 
     COMPARE_M_SIMD (digest[3], digest[4], digest[2], digest[1]);
@@ -279,16 +294,12 @@ DECLSPEC void m07800s (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
    * salt
    */
 
-  u32 salt_buf[8];
+  u32 salt_buf[4];
 
   salt_buf[0] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[0]);
   salt_buf[1] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[1]);
   salt_buf[2] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[2]);
   salt_buf[3] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[3]);
-  salt_buf[4] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[4]);
-  salt_buf[5] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[5]);
-  salt_buf[6] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[6]);
-  salt_buf[7] = hc_swap32_S (salt_bufs[SALT_POS_HOST].salt_buf[7]);
 
   const u32 salt_len = salt_bufs[SALT_POS_HOST].salt_len;
 
@@ -301,10 +312,10 @@ DECLSPEC void m07800s (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
   s0[1] = salt_buf[1];
   s0[2] = salt_buf[2];
   s0[3] = salt_buf[3];
-  s1[0] = salt_buf[4];
-  s1[1] = salt_buf[5];
-  s1[2] = salt_buf[6];
-  s1[3] = salt_buf[7];
+  s1[0] = 0;
+  s1[1] = 0;
+  s1[2] = 0;
+  s1[3] = 0;
   s2[0] = 0;
   s2[1] = 0;
   s2[2] = 0;
@@ -348,7 +359,19 @@ DECLSPEC void m07800s (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
      * SAP
      */
 
-    u32 final[32];
+    // 32 was sized for pw_len alone. SETSHIFTEDINT() below packs three
+    // variable-length pieces into final[] back to back with no bounds check:
+    // the candidate (up to pw_max, 55 for -O), a SHA1-digest-derived "magic
+    // array" chunk (32 + up to 50 from ten mod-6 terms, so up to 82), and
+    // the salt (up to salt_max, 51 for -O). 55+82+51 = 188 bytes needs index
+    // 47 (and SETSHIFTEDINT also touches d+1), i.e. 49 u32 minimum -- 32
+    // overflows by design for realistic inputs, not just contrived ones.
+    // Sized here to the worst case with headroom; the sha1_transform calls
+    // a few lines down still only ever process the first two 64-byte blocks
+    // of it (final+0..32), which is a separate, not-yet-addressed question:
+    // whether that's a correctness gap for inputs long enough to need a
+    // third block is outside the scope of this memory-safety fix.
+    u32 final[64];
 
     final[ 0] = w0[0] | s0[0];
     final[ 1] = w0[1] | s0[1];
@@ -435,14 +458,22 @@ DECLSPEC void m07800s (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
     final[ 5] = w1[1];
     final[ 6] = w1[2];
     final[ 7] = w1[3];
-    final[ 8] = 0;
-    final[ 9] = 0;
+    final[ 8] = w2[0];
+    final[ 9] = w2[1];
     final[10] = 0;
     final[11] = 0;
     final[12] = 0;
     final[13] = 0;
     final[14] = 0;
     final[15] = 0;
+
+    // final[] can hold up to 4 SHA1 blocks (see the SETSHIFTEDINT fix); only
+    // the first block (final[0..15]) is set above, and SETSHIFTEDINT() below
+    // only ever writes as many bytes as are actually appended, so anything
+    // past the appended data and before the length word placed by the block
+    // loop further down would otherwise be uninitialized.
+
+    for (u32 j = 16; j < 64; j++) final[j] = 0;
 
     u32 final_len = pw_len;
 
@@ -477,28 +508,27 @@ DECLSPEC void m07800s (PRIVATE_AS u32 *w0, PRIVATE_AS u32 *w1, PRIVATE_AS u32 *w
     final_len += salt_len;
 
     // calculate
+    //
+    // final_len can reach up to 188 bytes (pw_max 55 + magic_max 82 +
+    // salt_max 51), needing up to 4 SHA1 blocks with padding -- this used to
+    // be hardcoded to at most 2 blocks, silently dropping anything past byte
+    // 119 into a wrong digest instead of a crash.
 
-    if (final_len >= 56)
+    const u32 n_blocks = ((final_len + 8) / 64) + 1;
+
+    final[(n_blocks * 16) - 2] = 0;
+    final[(n_blocks * 16) - 1] = final_len * 8;
+
+    for (u32 b = 0; b < n_blocks; b++)
     {
-      final[30] = 0;
-      final[31] = final_len * 8;
-
-      sha1_transform (final +  0, final +  4, final +  8, final + 12, digest);
-      sha1_transform (final + 16, final + 20, final + 24, final + 28, digest);
-    }
-    else
-    {
-      final[14] = 0;
-      final[15] = final_len * 8;
-
-      sha1_transform (final +  0, final +  4, final +  8, final + 12, digest);
+      sha1_transform (final + (b * 16) + 0, final + (b * 16) + 4, final + (b * 16) + 8, final + (b * 16) + 12, digest);
     }
 
     COMPARE_S_SIMD (digest[3], digest[4], digest[2], digest[1]);
   }
 }
 
-KERNEL_FQ void m07800_m04 (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m07800_m04 (KERN_ATTR_BASIC ())
 {
   /**
    * base
@@ -513,8 +543,6 @@ KERNEL_FQ void m07800_m04 (KERN_ATTR_BASIC ())
   /**
    * modifier
    */
-
-  //const u64 lid = get_local_id (0);
 
   u32 w0[4];
 
@@ -553,7 +581,7 @@ KERNEL_FQ void m07800_m04 (KERN_ATTR_BASIC ())
   m07800m (w0, w1, w2, w3, pw_len, pws, rules_buf, combs_buf, bfs_buf, tmps, hooks, bitmaps_buf_s1_a, bitmaps_buf_s1_b, bitmaps_buf_s1_c, bitmaps_buf_s1_d, bitmaps_buf_s2_a, bitmaps_buf_s2_b, bitmaps_buf_s2_c, bitmaps_buf_s2_d, plains_buf, digests_buf, hashes_shown, salt_bufs, esalt_bufs, d_return_buf, d_extra0_buf, d_extra1_buf, d_extra2_buf, d_extra3_buf, kernel_param, gid, lid, lsz);
 }
 
-KERNEL_FQ void m07800_m08 (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m07800_m08 (KERN_ATTR_BASIC ())
 {
   /**
    * base
@@ -568,8 +596,6 @@ KERNEL_FQ void m07800_m08 (KERN_ATTR_BASIC ())
   /**
    * modifier
    */
-
-  //const u64 lid = get_local_id (0);
 
   u32 w0[4];
 
@@ -608,11 +634,7 @@ KERNEL_FQ void m07800_m08 (KERN_ATTR_BASIC ())
   m07800m (w0, w1, w2, w3, pw_len, pws, rules_buf, combs_buf, bfs_buf, tmps, hooks, bitmaps_buf_s1_a, bitmaps_buf_s1_b, bitmaps_buf_s1_c, bitmaps_buf_s1_d, bitmaps_buf_s2_a, bitmaps_buf_s2_b, bitmaps_buf_s2_c, bitmaps_buf_s2_d, plains_buf, digests_buf, hashes_shown, salt_bufs, esalt_bufs, d_return_buf, d_extra0_buf, d_extra1_buf, d_extra2_buf, d_extra3_buf, kernel_param, gid, lid, lsz);
 }
 
-KERNEL_FQ void m07800_m16 (KERN_ATTR_BASIC ())
-{
-}
-
-KERNEL_FQ void m07800_s04 (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m07800_m16 (KERN_ATTR_BASIC ())
 {
   /**
    * base
@@ -628,7 +650,58 @@ KERNEL_FQ void m07800_s04 (KERN_ATTR_BASIC ())
    * modifier
    */
 
-  //const u64 lid = get_local_id (0);
+  u32 w0[4];
+
+  w0[0] = pws[gid].i[ 0];
+  w0[1] = pws[gid].i[ 1];
+  w0[2] = pws[gid].i[ 2];
+  w0[3] = pws[gid].i[ 3];
+
+  u32 w1[4];
+
+  w1[0] = pws[gid].i[ 4];
+  w1[1] = pws[gid].i[ 5];
+  w1[2] = pws[gid].i[ 6];
+  w1[3] = pws[gid].i[ 7];
+
+  u32 w2[4];
+
+  w2[0] = pws[gid].i[ 8];
+  w2[1] = pws[gid].i[ 9];
+  w2[2] = pws[gid].i[10];
+  w2[3] = pws[gid].i[11];
+
+  u32 w3[4];
+
+  w3[0] = pws[gid].i[12];
+  w3[1] = pws[gid].i[13];
+  w3[2] = 0;
+  w3[3] = 0;
+
+  const u32 pw_len = pws[gid].pw_len & 63;
+
+  /**
+   * main
+   */
+
+  m07800m (w0, w1, w2, w3, pw_len, pws, rules_buf, combs_buf, bfs_buf, tmps, hooks, bitmaps_buf_s1_a, bitmaps_buf_s1_b, bitmaps_buf_s1_c, bitmaps_buf_s1_d, bitmaps_buf_s2_a, bitmaps_buf_s2_b, bitmaps_buf_s2_c, bitmaps_buf_s2_d, plains_buf, digests_buf, hashes_shown, salt_bufs, esalt_bufs, d_return_buf, d_extra0_buf, d_extra1_buf, d_extra2_buf, d_extra3_buf, kernel_param, gid, lid, lsz);
+}
+
+KERNEL_FQ KERNEL_FA void m07800_s04 (KERN_ATTR_BASIC ())
+{
+  /**
+   * base
+   */
+
+  const u64 lid = get_local_id (0);
+  const u64 gid = get_global_id (0);
+  const u64 lsz = get_local_size (0);
+
+  if (gid >= GID_CNT) return;
+
+  /**
+   * modifier
+   */
 
   u32 w0[4];
 
@@ -667,7 +740,7 @@ KERNEL_FQ void m07800_s04 (KERN_ATTR_BASIC ())
   m07800s (w0, w1, w2, w3, pw_len, pws, rules_buf, combs_buf, bfs_buf, tmps, hooks, bitmaps_buf_s1_a, bitmaps_buf_s1_b, bitmaps_buf_s1_c, bitmaps_buf_s1_d, bitmaps_buf_s2_a, bitmaps_buf_s2_b, bitmaps_buf_s2_c, bitmaps_buf_s2_d, plains_buf, digests_buf, hashes_shown, salt_bufs, esalt_bufs, d_return_buf, d_extra0_buf, d_extra1_buf, d_extra2_buf, d_extra3_buf, kernel_param, gid, lid, lsz);
 }
 
-KERNEL_FQ void m07800_s08 (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m07800_s08 (KERN_ATTR_BASIC ())
 {
   /**
    * base
@@ -682,8 +755,6 @@ KERNEL_FQ void m07800_s08 (KERN_ATTR_BASIC ())
   /**
    * modifier
    */
-
-  //const u64 lid = get_local_id (0);
 
   u32 w0[4];
 
@@ -722,6 +793,55 @@ KERNEL_FQ void m07800_s08 (KERN_ATTR_BASIC ())
   m07800s (w0, w1, w2, w3, pw_len, pws, rules_buf, combs_buf, bfs_buf, tmps, hooks, bitmaps_buf_s1_a, bitmaps_buf_s1_b, bitmaps_buf_s1_c, bitmaps_buf_s1_d, bitmaps_buf_s2_a, bitmaps_buf_s2_b, bitmaps_buf_s2_c, bitmaps_buf_s2_d, plains_buf, digests_buf, hashes_shown, salt_bufs, esalt_bufs, d_return_buf, d_extra0_buf, d_extra1_buf, d_extra2_buf, d_extra3_buf, kernel_param, gid, lid, lsz);
 }
 
-KERNEL_FQ void m07800_s16 (KERN_ATTR_BASIC ())
+KERNEL_FQ KERNEL_FA void m07800_s16 (KERN_ATTR_BASIC ())
 {
+  /**
+   * base
+   */
+
+  const u64 lid = get_local_id (0);
+  const u64 gid = get_global_id (0);
+  const u64 lsz = get_local_size (0);
+
+  if (gid >= GID_CNT) return;
+
+  /**
+   * modifier
+   */
+
+  u32 w0[4];
+
+  w0[0] = pws[gid].i[ 0];
+  w0[1] = pws[gid].i[ 1];
+  w0[2] = pws[gid].i[ 2];
+  w0[3] = pws[gid].i[ 3];
+
+  u32 w1[4];
+
+  w1[0] = pws[gid].i[ 4];
+  w1[1] = pws[gid].i[ 5];
+  w1[2] = pws[gid].i[ 6];
+  w1[3] = pws[gid].i[ 7];
+
+  u32 w2[4];
+
+  w2[0] = pws[gid].i[ 8];
+  w2[1] = pws[gid].i[ 9];
+  w2[2] = pws[gid].i[10];
+  w2[3] = pws[gid].i[11];
+
+  u32 w3[4];
+
+  w3[0] = pws[gid].i[12];
+  w3[1] = pws[gid].i[13];
+  w3[2] = 0;
+  w3[3] = 0;
+
+  const u32 pw_len = pws[gid].pw_len & 63;
+
+  /**
+   * main
+   */
+
+  m07800s (w0, w1, w2, w3, pw_len, pws, rules_buf, combs_buf, bfs_buf, tmps, hooks, bitmaps_buf_s1_a, bitmaps_buf_s1_b, bitmaps_buf_s1_c, bitmaps_buf_s1_d, bitmaps_buf_s2_a, bitmaps_buf_s2_b, bitmaps_buf_s2_c, bitmaps_buf_s2_d, plains_buf, digests_buf, hashes_shown, salt_bufs, esalt_bufs, d_return_buf, d_extra0_buf, d_extra1_buf, d_extra2_buf, d_extra3_buf, kernel_param, gid, lid, lsz);
 }

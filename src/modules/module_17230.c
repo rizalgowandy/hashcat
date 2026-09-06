@@ -91,6 +91,7 @@ Related publication: https://scitepress.org/PublicationsDetail.aspx?ID=KLPzPqStp
 #include "bitops.h"
 #include "convert.h"
 #include "shared.h"
+#include "memory.h"
 
 static const u32   ATTACK_EXEC    = ATTACK_EXEC_INSIDE_KERNEL;
 static const u32   DGST_POS0      = 0;
@@ -199,9 +200,11 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 
   u32 *digest = (u32 *) digest_buf;
 
-  char input[line_len + 1];
+  char *input = (char *) hcmalloc (line_len + 1);
+  if (!input) return PARSER_HAVE_ERRNO;
+
+  memcpy (input, line_buf, line_len);
   input[line_len] = '\0';
-  memcpy (&input, line_buf, line_len);
 
   char *saveptr = NULL;
 
@@ -276,6 +279,8 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
     if (p == NULL) return PARSER_HASH_LENGTH;
     pkzip->hashes[i].data_length = strtoul (p, NULL, 16);
 
+    if (pkzip->hashes[i].data_length > MAX_DATA) return (PARSER_TOKEN_LENGTH);
+
     p = strtok_r (NULL, "*", &saveptr);
     if (p == NULL) return PARSER_HASH_LENGTH;
     u16 checksum_from_crc = 0;
@@ -298,7 +303,12 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
     p = strtok_r (NULL, "*", &saveptr);
     if (p == NULL) return PARSER_HASH_LENGTH;
 
-    hex_to_binary (p, strlen (p), (char *) &(pkzip->hashes[i].data));
+    const size_t data_hex_len = strlen (p);
+
+    if (data_hex_len > MAX_DATA * 2) return (PARSER_TOKEN_LENGTH);
+    if (data_hex_len % 2)            return (PARSER_TOKEN_LENGTH);
+
+    hex_to_binary (p, data_hex_len, (char *) &(pkzip->hashes[i].data));
 
     // fake salt
     salt->salt_buf[i] = pkzip->hashes[i].data[0];
@@ -307,6 +317,8 @@ int module_hash_decode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
   }
 
   salt->salt_len = pkzip->hash_count << 2;
+
+  hcfree (input);
 
   return (PARSER_OK);
 }
@@ -319,51 +331,54 @@ int module_hash_encode (MAYBE_UNUSED const hashconfig_t *hashconfig, MAYBE_UNUSE
 
   if (pkzip->version == 1)
   {
-    sprintf (line_buf, "%s", SIGNATURE_PKZIP_V1);
-    out_len += 7;
+    out_len += snprintf (line_buf + out_len, line_size - out_len, "%s", SIGNATURE_PKZIP_V1);
   }
   else
   {
-    sprintf (line_buf, "%s", SIGNATURE_PKZIP_V2);
-    out_len += 8;
+    out_len += snprintf (line_buf + out_len, line_size - out_len, "%s", SIGNATURE_PKZIP_V2);
   }
-  out_len += sprintf (line_buf + out_len, "%i*%i*", pkzip->hash_count, pkzip->checksum_size);
+
+  out_len += snprintf (line_buf + out_len, line_size - out_len, "%i*%i*", pkzip->hash_count, pkzip->checksum_size);
 
   for (int cnt = 0; cnt < pkzip->hash_count; cnt++)
   {
     if (cnt > 0)
     {
-      out_len += sprintf (line_buf + out_len, "*");
-    }
-    out_len += sprintf (line_buf + out_len, "%i*%i*", pkzip->hashes[cnt].data_type_enum, pkzip->hashes[cnt].magic_type_enum);
-    if (pkzip->hashes[cnt].data_type_enum > 1)
-    {
-      out_len += sprintf (line_buf + out_len, "%x*%x*%x*%x*%x*", pkzip->hashes[cnt].compressed_length, pkzip->hashes[cnt].uncompressed_length, pkzip->hashes[cnt].crc32, pkzip->hashes[cnt].offset, pkzip->hashes[cnt].additional_offset);
+      out_len += snprintf (line_buf + out_len, line_size - out_len, "*");
     }
 
-    out_len += sprintf (line_buf + out_len, "%i*%x*%04x*", pkzip->hashes[cnt].compression_type, pkzip->hashes[cnt].data_length, pkzip->hashes[cnt].checksum_from_crc);
+    out_len += snprintf (line_buf + out_len, line_size - out_len, "%i*%i*", pkzip->hashes[cnt].data_type_enum, pkzip->hashes[cnt].magic_type_enum);
+
+    if (pkzip->hashes[cnt].data_type_enum > 1)
+    {
+      out_len += snprintf (line_buf + out_len, line_size - out_len, "%x*%x*%x*%x*%x*", pkzip->hashes[cnt].compressed_length, pkzip->hashes[cnt].uncompressed_length, pkzip->hashes[cnt].crc32, pkzip->hashes[cnt].offset, pkzip->hashes[cnt].additional_offset);
+    }
+
+    out_len += snprintf (line_buf + out_len, line_size - out_len, "%i*%x*%04x*", pkzip->hashes[cnt].compression_type, pkzip->hashes[cnt].data_length, pkzip->hashes[cnt].checksum_from_crc);
+
     if (pkzip->version == 2)
     {
-      out_len += sprintf (line_buf + out_len, "%04x*", pkzip->hashes[cnt].checksum_from_timestamp);
+      out_len += snprintf (line_buf + out_len, line_size - out_len, "%04x*", pkzip->hashes[cnt].checksum_from_timestamp);
     }
 
     for (u32 i = 0; i < pkzip->hashes[cnt].data_length / 4; i++)
     {
-      out_len += sprintf (line_buf + out_len, "%08x", byte_swap_32 (pkzip->hashes[cnt].data[i]));
+      out_len += snprintf (line_buf + out_len, line_size - out_len, "%08x", byte_swap_32(pkzip->hashes[cnt].data[i]));
     }
+
     for (u32 i = 0; i < pkzip->hashes[cnt].data_length % 4; i++)
     {
-      out_len += sprintf (line_buf + out_len, "%02x", (pkzip->hashes[cnt].data[pkzip->hashes[cnt].data_length / 4] >> i*8) & 0xff);
+      out_len += snprintf (line_buf + out_len, line_size - out_len, "%02x", (pkzip->hashes[cnt].data[pkzip->hashes[cnt].data_length / 4] >> (i*8)) & 0xff);
     }
   }
 
   if (pkzip->version == 1)
   {
-    out_len += sprintf (line_buf + out_len, "*$/pkzip$");
+    out_len += snprintf (line_buf + out_len, line_size - out_len, "*$/pkzip$");
   }
   else
   {
-    out_len += sprintf (line_buf + out_len, "*$/pkzip2$");
+    out_len += snprintf (line_buf + out_len, line_size - out_len, "*$/pkzip2$");
   }
 
   return out_len;
@@ -374,6 +389,7 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_context_size             = MODULE_CONTEXT_SIZE_CURRENT;
   module_ctx->module_interface_version        = MODULE_INTERFACE_VERSION_CURRENT;
 
+  module_ctx->module_advice_notice            = MODULE_DEFAULT;
   module_ctx->module_attack_exec              = module_attack_exec;
   module_ctx->module_benchmark_esalt          = MODULE_DEFAULT;
   module_ctx->module_benchmark_hook_salt      = MODULE_DEFAULT;
@@ -390,7 +406,6 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_dgst_pos2                = module_dgst_pos2;
   module_ctx->module_dgst_pos3                = module_dgst_pos3;
   module_ctx->module_dgst_size                = module_dgst_size;
-  module_ctx->module_dictstat_disable         = MODULE_DEFAULT;
   module_ctx->module_esalt_size               = module_esalt_size;
   module_ctx->module_extra_buffer_size        = MODULE_DEFAULT;
   module_ctx->module_extra_tmp_size           = MODULE_DEFAULT;
@@ -448,5 +463,6 @@ void module_init (module_ctx_t *module_ctx)
   module_ctx->module_st_pass                  = module_st_pass;
   module_ctx->module_tmp_size                 = MODULE_DEFAULT;
   module_ctx->module_unstable_warning         = module_unstable_warning;
+  module_ctx->module_usage_notice             = MODULE_DEFAULT;
   module_ctx->module_warmup_disable           = MODULE_DEFAULT;
 }

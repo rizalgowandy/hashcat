@@ -6,6 +6,8 @@
 #ifndef HC_COMMON_H
 #define HC_COMMON_H
 
+#include "export.h"
+
 #define PROGNAME "hashcat"
 
 #if defined (__unix__) || defined (__APPLE__)
@@ -143,5 +145,20 @@ but this is needed for VS compiler which doesn't have inline keyword but has __i
 #define EOL "\n"
 #endif
 
+
+// One spelling of getpid () for both platforms, used where a file needs a name no other process on
+// the host will pick.
+
+#if defined (_WIN)
+#define HC_GETPID _getpid
+#else
+#define HC_GETPID getpid
+#endif
+
 #endif // HC_COMMON_H
 
+
+#define USAGE_NOTICE_NUM_ROUNDS "rounds=[# of iterations] is optional here, after signature, e.g. $5$rounds=5000"
+#define USAGE_NOTICE_ITUNES_BACKUP "You can use https://github.com/philsmd/itunes_backup2hashcat/ to extract the hashes from the Manifest.plist file"
+#define USAGE_NOTICE_GPG "You can use https://github.com/pwrbob/pgp2hc or the older https://github.com/openwall/john/blob/bleeding-jumbo/src/gpg2john.c to extract the hashes"
+#define USAGE_NOTICE_LUKS "You can use https://github.com/hashcat/hashcat/blob/master/tools/luks2hashcat.py to extract the hashes"

@@ -1479,7 +1479,7 @@ DECLSPEC void s8 (const u32 a1, const u32 a2, const u32 a3, const u32 a4, const 
 //#define SWAP(a, b) { u32 tmp=*a;*a=*b;*b=tmp; }
 #define SWAP(a, b) { u32 tmp=*a;*a=*b;*b=tmp; }
 
-#define DATASWAP  \
+#define DATASWAP   \
   SWAP (D00, D32); \
   SWAP (D01, D33); \
   SWAP (D02, D34); \
@@ -1885,7 +1885,7 @@ DECLSPEC void transpose32c (PRIVATE_AS u32 *data)
 // transpose bitslice mod : attention race conditions, need different buffers for *in and *out
 //
 
-KERNEL_FQ void m01500_tm (KERN_ATTR_TM)
+KERNEL_FQ KERNEL_FA void m01500_tm (KERN_ATTR_TM)
 {
   const u64 gid = get_global_id (0);
 
@@ -1915,11 +1915,13 @@ KERNEL_FQ void m01500_tm (KERN_ATTR_TM)
 
 #ifndef DESCRYPT_SALT
 
-KERNEL_FQ void m01500_sxx (KERN_ATTR_BITSLICE ())
+KERNEL_FQ KERNEL_FA void m01500_sxx (KERN_ATTR_BITSLICE ())
 {
 }
 
-KERNEL_FQ void m01500_mxx (KERN_ATTR_BITSLICE ())
+#endif
+
+KERNEL_FQ KERNEL_FA void m01500_mxx (KERN_ATTR_BITSLICE ())
 {
   /**
    * base
@@ -2292,9 +2294,9 @@ KERNEL_FQ void m01500_mxx (KERN_ATTR_BITSLICE ())
   }
 }
 
-#else
+#ifdef DESCRYPT_SALT
 
-KERNEL_FQ void m01500_sxx (KERN_ATTR_BITSLICE ())
+KERNEL_FQ KERNEL_FA void m01500_sxx (KERN_ATTR_BITSLICE ())
 {
   /**
    * base
@@ -2686,10 +2688,6 @@ KERNEL_FQ void m01500_sxx (KERN_ATTR_BITSLICE ())
     #include COMPARE_S
     #endif
   }
-}
-
-KERNEL_FQ void m01500_mxx (KERN_ATTR_BITSLICE ())
-{
 }
 
 #endif
